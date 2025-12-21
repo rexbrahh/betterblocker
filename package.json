@@ -1,0 +1,24 @@
+{
+  "name": "betterblocker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run build:bg && bun run build:cs && bun run build:popup",
+    "build:bg": "bun build src/bg/main.ts --outfile=dist/bg/main.js --target=browser --format=iife --define:DEBUG=false",
+    "build:cs": "bun build src/cs/bootstrap.ts --outfile=dist/cs/bootstrap.js --target=browser --format=iife",
+    "build:popup": "bun build src/popup/popup.ts --outfile=dist/popup/popup.js --target=browser --format=iife",
+    "build:dev": "bun run build:bg -- --sourcemap && bun run build:cs -- --sourcemap && bun run build:popup -- --sourcemap",
+    "build:wasm": "cd crates/bb-wasm && wasm-pack build --target web --out-dir ../../extension/wasm",
+    "watch": "bun run build:dev --watch",
+    "dist": "bun run build && cp -r extension/* dist/ && mkdir -p dist/data",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "compile": "cargo run --package bb-cli -- compile",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "@types/chrome": "^0.1.32"
+  }
+}

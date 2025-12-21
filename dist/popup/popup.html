@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BetterBlocker</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>BetterBlocker</h1>
+      <div id="status-indicator" class="status-badge">
+        <span class="status-dot"></span>
+        <span class="status-text">Loading...</span>
+      </div>
+    </header>
+    
+    <main>
+      <div class="stats-card">
+        <div class="stats-value" id="block-count">-</div>
+        <div class="stats-label">Requests Blocked</div>
+      </div>
+
+      <div class="controls">
+        <span class="toggle-label">Blocking Enabled</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="enabled-toggle" disabled>
+          <span class="slider"></span>
+        </label>
+      </div>
+    </main>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+[package]
+name = "bb-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WebAssembly bindings for BetterBlocker"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bb-core = { path = "../bb-core" }
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+web-sys.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

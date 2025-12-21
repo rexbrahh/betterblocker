@@ -1,0 +1,11 @@
+[package]
+name = "bb-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Filter list compiler for BetterBlocker"
+
+[dependencies]
+bb-core = { path = "../bb-core" }
+thiserror.workspace = true
+log.workspace = true

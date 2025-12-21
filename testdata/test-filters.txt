@@ -1,0 +1,33 @@
+# Test filter list for BetterBlocker
+# Common ad/tracking domains
+
+# Host-anchored rules (domain blocking)
+||ads.example.com^
+||tracking.example.com^
+||analytics.test.com^
+||doubleclick.net^
+||googlesyndication.com^
+||googleadservices.com^
+||facebook.com/tr^
+||google-analytics.com^
+||adservice.google.com^
+||pagead2.googlesyndication.com^
+
+# Pattern rules with wildcards
+||*/ads/*
+||*/tracking/*
+||*banner*ad*
+||*/pixel.gif$image
+||*/beacon.js$script
+
+# Third-party only rules
+||cdn.ads.com^$third-party
+||metrics.example.com^$third-party
+
+# Exception rules (whitelist)
+@@||example.com/assets/*
+@@||cdn.example.com^$first-party
+
+# Hosts-style entries
+127.0.0.1 malware.example.com
+0.0.0.0 spyware.test.org
