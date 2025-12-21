@@ -447,6 +447,7 @@ let wasm: WasmExports | null = null;
 let blockCount = 0;
 let snapshotStats: SnapshotStats | null = null;
 let initPromise: Promise<void> | null = null;
+let autoCompileInFlight: Promise<void> | null = null;
 
 async function loadWasm(cacheBust?: string): Promise<WasmExports> {
   const cacheSuffix = cacheBust ? `?v=${cacheBust}` : '';
@@ -550,9 +551,11 @@ async function initialize(): Promise<void> {
     const seeded = await ensureDefaultLists();
     if (seeded) {
       setTimeout(() => {
-        compileAndStoreLists().catch((e: Error) => {
-          console.error('[BetterBlocker] Default list compile failed:', e);
-        });
+        void maybeAutoCompile('seeded');
+      }, 0);
+    } else if (!wasm?.is_initialized()) {
+      setTimeout(() => {
+        void maybeAutoCompile('startup');
       }, 0);
     }
     setupUpdateSchedule();
@@ -587,6 +590,33 @@ async function ensureDefaultLists(): Promise<boolean> {
   }
   await saveLists(DEFAULT_LISTS);
   return true;
+}
+
+async function maybeAutoCompile(reason: string): Promise<void> {
+  if (autoCompileInFlight) {
+    return autoCompileInFlight;
+  }
+  if (!wasm || wasm.is_initialized()) {
+    return;
+  }
+  const lists = await getLists();
+  const enabledLists = lists.filter((list) => list.enabled && list.url.trim().length > 0);
+  if (enabledLists.length === 0) {
+    console.warn(`[BetterBlocker] Auto-compile skipped (${reason}): no enabled lists`);
+    return;
+  }
+  console.warn(`[BetterBlocker] Auto-compile triggered (${reason})`);
+  autoCompileInFlight = compileAndStoreLists()
+    .then(() => {
+      console.log('[BetterBlocker] Auto-compile finished');
+    })
+    .catch((e: Error) => {
+      console.error('[BetterBlocker] Auto-compile failed:', e);
+    })
+    .finally(() => {
+      autoCompileInFlight = null;
+    });
+  return autoCompileInFlight;
 }
 
 function setupUpdateSchedule(): void {
@@ -985,11 +1015,21 @@ function setupMessageHandlers(): void {
             typeof message.url === 'string'
               ? message.url
               : (sender.tab?.url ?? topFrameByTab.get(tabId));
+          const initialized = wasm?.is_initialized() ?? false;
+          if (!initialized) {
+            void maybeAutoCompile('getStats');
+          }
+          let snapshotInfo: { size: number; initialized: boolean } | null = null;
+          try {
+            snapshotInfo = wasm?.get_snapshot_info() ?? null;
+          } catch (e) {
+            console.warn('[BetterBlocker] Snapshot info error:', e);
+          }
           sendResponse({
             blockCount,
             enabled: settings.enabled,
-            initialized: wasm?.is_initialized() ?? false,
-            snapshotInfo: wasm?.get_snapshot_info() ?? null,
+            initialized,
+            snapshotInfo,
             snapshotStats,
             tabBlockCount: getTabBlockCount(tabId),
             siteDisabled: isSiteDisabled(siteUrl),
