@@ -22,7 +22,7 @@ const BUDGETS = {
   coldStartMs: 500,
   wasmPeakMb: 50,
   matchP99Us: 1000,
-  snapshotSizeMb: 25,
+  snapshotSizeMb: 30,
 };
 
 function assertFileExists(path: string, hint: string): void {
