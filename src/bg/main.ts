@@ -13,7 +13,16 @@ import {
   saveStoredSnapshot,
   type SnapshotStats,
 } from './snapshot-store.js';
-import { traceConfigure, traceExportJsonl, traceMaybeRecord, traceStats } from './trace.js';
+import {
+  traceConfigure,
+  traceExportJsonl,
+  traceMaybeRecord,
+  traceStats,
+  perfConfigure,
+  perfMaybeRecord,
+  perfStats,
+  perfExportJson,
+} from './trace.js';
 
 declare const browser: typeof chrome | undefined;
 
@@ -22,6 +31,36 @@ const api = (typeof browser !== 'undefined' ? browser : chrome) as typeof chrome
 const STORAGE_KEY = 'filterLists';
 const DYNAMIC_RULES_KEY = 'dynamicRules';
 const SETTINGS_KEY = 'settings';
+const DEFAULT_LISTS: FilterList[] = [
+  {
+    id: 'oisd-big-bundled',
+    name: 'OISD Big (bundled)',
+    url: api.runtime.getURL('data/oisd_big_abp.txt'),
+    enabled: true,
+    ruleCount: 0,
+    lastUpdated: null,
+    pinned: true,
+    version: '202512210305',
+    homepage: 'https://oisd.nl',
+    license: 'https://github.com/sjhgvr/oisd/blob/main/LICENSE',
+    source: 'bundled',
+  },
+  {
+    id: 'hagezi-ultimate-bundled',
+    name: "HaGeZi's Ultimate (bundled)",
+    url: api.runtime.getURL('data/ultimate.txt'),
+    enabled: true,
+    ruleCount: 0,
+    lastUpdated: null,
+    pinned: true,
+    version: '2025.1220.1821.33',
+    homepage: 'https://github.com/hagezi/dns-blocklists',
+    license: 'https://github.com/hagezi/dns-blocklists/blob/main/LICENSE',
+    source: 'bundled',
+  },
+];
+const UPDATE_ALARM_NAME = 'listUpdate';
+const UPDATE_INTERVAL_MINUTES = 24 * 60;
 const topFrameByTab = new Map<number, string>();
 const blockedByTab = new Map<number, number>();
 const mainFrameRequestIdByTab = new Map<number, string>();
@@ -353,6 +392,11 @@ interface FilterList {
   enabled: boolean;
   ruleCount: number;
   lastUpdated: string | null;
+  pinned?: boolean;
+  version?: string;
+  homepage?: string;
+  license?: string;
+  source?: string;
 }
 
 interface WasmExports {
@@ -382,7 +426,7 @@ interface WasmExports {
     tabId: number,
     frameId: number,
     requestId: string
-  ): { css: string; enableGeneric: boolean; procedural: unknown[]; scriptlets: { name: string; args: string[] }[] };
+  ): { css: string; enableGeneric: boolean; procedural: string[]; scriptlets: { name: string; args: string[] }[] };
   should_block(url: string, requestType: string, initiator: string | undefined): boolean;
   get_snapshot_info(): { size: number; initialized: boolean };
   get_etld1_js?(host: string): string;
@@ -492,6 +536,15 @@ async function initialize(): Promise<void> {
 
     await loadDynamicRules();
     await loadSettings();
+    const seeded = await ensureDefaultLists();
+    if (seeded) {
+      setTimeout(() => {
+        compileAndStoreLists().catch((e: Error) => {
+          console.error('[BetterBlocker] Default list compile failed:', e);
+        });
+      }, 0);
+    }
+    setupUpdateSchedule();
     updateAllBadges();
 
     console.log('[BetterBlocker] Ready');
@@ -513,6 +566,30 @@ async function getLists(): Promise<FilterList[]> {
 async function saveLists(lists: FilterList[]): Promise<void> {
   return new Promise((resolve) => {
     api.storage.sync.set({ [STORAGE_KEY]: lists }, () => resolve());
+  });
+}
+
+async function ensureDefaultLists(): Promise<boolean> {
+  const lists = await getLists();
+  if (lists.length > 0) {
+    return false;
+  }
+  await saveLists(DEFAULT_LISTS);
+  return true;
+}
+
+function setupUpdateSchedule(): void {
+  if (!api.alarms) {
+    return;
+  }
+  api.alarms.create(UPDATE_ALARM_NAME, { periodInMinutes: UPDATE_INTERVAL_MINUTES });
+  api.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== UPDATE_ALARM_NAME) {
+      return;
+    }
+    compileAndStoreLists().catch((e: Error) => {
+      console.error('[BetterBlocker] Scheduled list update failed:', e);
+    });
   });
 }
 
@@ -624,31 +701,36 @@ function onBeforeRequest(
   details: RequestDetails
 ): chrome.webRequest.BlockingResponse | undefined {
   traceMaybeRecord(details);
+  const perfStart = performance.now();
+  const finalize = (response?: chrome.webRequest.BlockingResponse) => {
+    perfMaybeRecord('beforeRequest', performance.now() - perfStart);
+    return response;
+  };
 
   if (details.tabId < 0) {
-    return undefined;
+    return finalize(undefined);
   }
 
   updateTopFrame(details);
 
   if (!settings.enabled || !wasm?.is_initialized()) {
-    return undefined;
+    return finalize(undefined);
   }
 
   const initiator = getContextUrl(details);
   if (isSiteDisabled(initiator ?? details.url)) {
-    return undefined;
+    return finalize(undefined);
   }
 
   const dynamicDecision = matchDynamicRules(details, initiator);
 
   if (dynamicDecision === DynamicAction.BLOCK) {
     incrementTabBlockCount(details.tabId);
-    return { cancel: true };
+    return finalize({ cancel: true });
   }
 
   if (dynamicDecision === DynamicAction.ALLOW) {
-    return undefined;
+    return finalize(undefined);
   }
 
   try {
@@ -664,7 +746,7 @@ function onBeforeRequest(
     switch (result.decision) {
       case MatchDecision.BLOCK:
         incrementTabBlockCount(details.tabId);
-        return { cancel: true };
+        return finalize({ cancel: true });
 
       case MatchDecision.REDIRECT:
         if (result.redirectUrl) {
@@ -672,51 +754,57 @@ function onBeforeRequest(
           const redirectUrl = result.redirectUrl.startsWith('/')
             ? api.runtime.getURL(`resources${result.redirectUrl}`)
             : result.redirectUrl;
-          return { redirectUrl };
+          return finalize({ redirectUrl });
         }
         incrementTabBlockCount(details.tabId);
-        return { cancel: true };
+        return finalize({ cancel: true });
 
       case MatchDecision.REMOVEPARAM:
         if (!settings.removeparamEnabled) {
-          return undefined;
+          return finalize(undefined);
         }
         if (result.redirectUrl) {
           if (shouldSkipRemoveparam(details, result.redirectUrl)) {
-            return undefined;
+            return finalize(undefined);
           }
-          return { redirectUrl: result.redirectUrl };
+          return finalize({ redirectUrl: result.redirectUrl });
         }
-        return undefined;
+        return finalize(undefined);
 
       default:
-        return undefined;
+        return finalize(undefined);
     }
   } catch (e) {
     console.error('[BetterBlocker] Match error:', e);
-    return undefined;
+    return finalize(undefined);
   }
 }
 
 function onHeadersReceived(
   details: ResponseDetails
 ): chrome.webRequest.BlockingResponse | undefined {
+  const perfStart = performance.now();
+  const finalize = (response?: chrome.webRequest.BlockingResponse) => {
+    perfMaybeRecord('headersReceived', performance.now() - perfStart);
+    return response;
+  };
+
   if (details.tabId < 0) {
-    return undefined;
+    return finalize(undefined);
   }
 
   if (!settings.enabled || !wasm?.is_initialized()) {
-    return undefined;
+    return finalize(undefined);
   }
 
   const headers = details.responseHeaders;
   if (!headers || headers.length === 0) {
-    return undefined;
+    return finalize(undefined);
   }
 
   const initiator = getContextUrl(details);
   if (isSiteDisabled(initiator ?? details.url)) {
-    return undefined;
+    return finalize(undefined);
   }
 
   try {
@@ -732,7 +820,7 @@ function onHeadersReceived(
 
     if (result.cancel) {
       incrementTabBlockCount(details.tabId);
-      return { cancel: true };
+      return finalize({ cancel: true });
     }
 
     const removeHeaders = settings.responseHeaderEnabled ? (result.removeHeaders ?? []) : [];
@@ -748,17 +836,17 @@ function onHeadersReceived(
       for (const value of result.csp) {
         responseHeaders.push({ name: 'Content-Security-Policy', value });
       }
-      return { responseHeaders };
+      return finalize({ responseHeaders });
     }
 
     if (removeHeaders.length > 0) {
-      return { responseHeaders };
+      return finalize({ responseHeaders });
     }
 
-    return undefined;
+    return finalize(undefined);
   } catch (e) {
     console.error('[BetterBlocker] Header match error:', e);
-    return undefined;
+    return finalize(undefined);
   }
 }
 
@@ -866,6 +954,7 @@ function setupMessageHandlers(): void {
           if (!settings.cosmeticsEnabled) {
             result.css = '';
             result.enableGeneric = false;
+            result.procedural = [];
           }
           if (!settings.scriptletsEnabled || frameId !== 0) {
             result.scriptlets = [];
@@ -978,6 +1067,24 @@ function setupMessageHandlers(): void {
 
         case 'trace.export':
           sendResponse({ ok: true, jsonl: traceExportJsonl(), stats: traceStats() });
+          return true;
+
+        case 'perf.start':
+          perfConfigure(true, message.maxEntries ?? 100_000);
+          sendResponse({ ok: true, stats: perfStats() });
+          return true;
+
+        case 'perf.stop':
+          perfConfigure(false);
+          sendResponse({ ok: true, stats: perfStats() });
+          return true;
+
+        case 'perf.stats':
+          sendResponse({ ok: true, stats: perfStats() });
+          return true;
+
+        case 'perf.export':
+          sendResponse({ ok: true, json: perfExportJson(), stats: perfStats() });
           return true;
 
         default:

@@ -53,3 +53,77 @@ export function traceExportJsonl(): string {
 export function traceStats(): { enabled: boolean; count: number; max: number } {
   return { enabled, count: entries.length, max: maxEntries };
 }
+
+type PerfPhase = 'beforeRequest' | 'headersReceived';
+
+type PerfBucket = {
+  count: number;
+  min: number;
+  max: number;
+  p50: number;
+  p95: number;
+  p99: number;
+};
+
+let perfEnabled = false;
+let perfMaxEntries = 100_000;
+const perfEntries: Record<PerfPhase, number[]> = {
+  beforeRequest: [],
+  headersReceived: [],
+};
+
+function computePercentile(values: number[], percentile: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(sorted.length * percentile)));
+  return sorted[idx] ?? 0;
+}
+
+function summarize(values: number[]): PerfBucket {
+  if (values.length === 0) {
+    return { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 };
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  return {
+    count: sorted.length,
+    min: sorted[0] ?? 0,
+    max: sorted[sorted.length - 1] ?? 0,
+    p50: computePercentile(sorted, 0.5),
+    p95: computePercentile(sorted, 0.95),
+    p99: computePercentile(sorted, 0.99),
+  };
+}
+
+export function perfConfigure(on: boolean, max: number = 100_000): void {
+  perfEnabled = on;
+  perfMaxEntries = Math.max(1_000, Math.min(1_000_000, Math.floor(max)));
+  if (!perfEnabled) {
+    perfEntries.beforeRequest = [];
+    perfEntries.headersReceived = [];
+  }
+}
+
+export function perfMaybeRecord(phase: PerfPhase, durationMs: number): void {
+  if (!perfEnabled) {
+    return;
+  }
+  const bucket = perfEntries[phase];
+  if (!bucket || bucket.length >= perfMaxEntries) {
+    return;
+  }
+  bucket.push(durationMs);
+}
+
+export function perfStats(): { enabled: boolean; beforeRequest: PerfBucket; headersReceived: PerfBucket } {
+  return {
+    enabled: perfEnabled,
+    beforeRequest: summarize(perfEntries.beforeRequest),
+    headersReceived: summarize(perfEntries.headersReceived),
+  };
+}
+
+export function perfExportJson(): string {
+  return JSON.stringify(perfEntries);
+}

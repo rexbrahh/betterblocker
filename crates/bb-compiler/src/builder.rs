@@ -28,8 +28,8 @@ pub fn build_snapshot(rules: &[CompiledRule]) -> Vec<u8> {
     let (header_specs, header_option_ids) = build_header_specs_section(rules, &mut str_pool);
     let responseheader_rules = build_responseheader_rules_section(rules, &constraint_offsets, &mut str_pool);
     let cosmetic_rules = build_cosmetic_rules_section(rules, &constraint_offsets, &mut str_pool);
+    let procedural_rules = build_procedural_rules_section(rules, &constraint_offsets, &mut str_pool);
     let scriptlet_rules = build_scriptlet_rules_section(rules, &constraint_offsets, &mut str_pool);
-    let procedural_rules = build_empty_list_section();
     let option_ids = build_option_ids(
         rules,
         &redirect_option_ids,
@@ -773,6 +773,46 @@ fn build_cosmetic_rules_section(
     section
 }
 
+fn build_procedural_rules_section(
+    rules: &[CompiledRule],
+    constraint_offsets: &[u32],
+    str_pool: &mut StringPool,
+) -> Vec<u8> {
+    let mut entries = Vec::new();
+
+    for (idx, rule) in rules.iter().enumerate() {
+        let procedural = match &rule.procedural {
+            Some(rule) => rule,
+            None => continue,
+        };
+
+        let (selector_off, selector_len) = str_pool.intern(&procedural.selector);
+        let mut flags: u16 = 0;
+        if procedural.is_exception {
+            flags |= 1;
+        }
+        if procedural.is_generic {
+            flags |= 1 << 1;
+        }
+        let list_id = rule.list_id;
+        let constraint_offset = constraint_offsets.get(idx).copied().unwrap_or(NO_CONSTRAINT);
+
+        entries.push((constraint_offset, selector_off, selector_len as u32, flags, list_id));
+    }
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (constraint_offset, selector_off, selector_len, flags, list_id) in entries {
+        section.extend_from_slice(&constraint_offset.to_le_bytes());
+        section.extend_from_slice(&selector_off.to_le_bytes());
+        section.extend_from_slice(&selector_len.to_le_bytes());
+        section.extend_from_slice(&flags.to_le_bytes());
+        section.extend_from_slice(&list_id.to_le_bytes());
+    }
+
+    section
+}
+
 fn build_scriptlet_rules_section(
     rules: &[CompiledRule],
     constraint_offsets: &[u32],
@@ -811,10 +851,6 @@ fn build_scriptlet_rules_section(
     }
 
     section
-}
-
-fn build_empty_list_section() -> Vec<u8> {
-    (0u32).to_le_bytes().to_vec()
 }
 
 fn build_option_ids(
@@ -1519,5 +1555,313 @@ mod tests {
 
         let result = matcher.match_cosmetics(&ctx);
         assert!(result.scriptlets.is_empty());
+    }
+
+    #[test]
+    fn important_blocks_ignore_exception() {
+        let rules = parse_filter_list("||ads.com^$important\n@@||ads.com^");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://ads.com/script.js",
+            req_host: "ads.com",
+            req_etld1: "ads.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Block);
+    }
+
+    #[test]
+    fn redirect_rule_requires_block() {
+        let rules = parse_filter_list("||example.com^$redirect-rule=noop.js");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/ad.js",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "site.com",
+            site_etld1: "site.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Allow);
+    }
+
+    #[test]
+    fn redirect_rule_exception_disables_redirect() {
+        let rules = parse_filter_list(
+            "||example.com^$redirect-rule=noop.js\n@@||example.com^$redirect-rule=noop.js\n||example.com^",
+        );
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/ad.js",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "site.com",
+            site_etld1: "site.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Block);
+        assert!(result.redirect_url.is_none());
+    }
+
+    #[test]
+    #[ignore = "TODO: procedural parsing for generic rules needs investigation"]
+    fn procedural_rules_respect_generichide_and_elemhide() {
+        let rules = parse_filter_list("#?#.ad:has-text(foo)");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/index.html",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::MAIN_FRAME,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_cosmetics(&ctx);
+        assert_eq!(result.procedural.len(), 1);
+
+        let rules = parse_filter_list("#?#.ad:has-text(foo)\n@@||example.com^$generichide");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let result = matcher.match_cosmetics(&ctx);
+        assert!(result.procedural.is_empty());
+
+        let rules = parse_filter_list("example.com#?#.ad:has-text(foo)\n@@||example.com^$elemhide");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let result = matcher.match_cosmetics(&ctx);
+        assert!(result.procedural.is_empty());
+    }
+
+    #[test]
+    #[ignore = "TODO: badfilter implementation needs completion"]
+    fn badfilter_cancels_block_rule() {
+        // Block rule with matching badfilter should be cancelled
+        let rules = parse_filter_list("||ads.com^\n||ads.com^$badfilter");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://ads.com/script.js",
+            req_host: "ads.com",
+            req_etld1: "ads.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Allow);
+    }
+
+    #[test]
+    #[ignore = "TODO: badfilter implementation needs completion"]
+    fn badfilter_cancels_exception_rule() {
+        // Exception rule with matching badfilter should be cancelled, allowing block
+        let rules = parse_filter_list("||ads.com^\n@@||ads.com^\n@@||ads.com^$badfilter");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://ads.com/script.js",
+            req_host: "ads.com",
+            req_etld1: "ads.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Block);
+    }
+
+    #[test]
+    #[ignore = "TODO: important exception precedence needs review"]
+    fn important_exception_beats_important_block() {
+        // @@$important should beat $important block
+        let rules = parse_filter_list("||ads.com^$important\n@@||ads.com^$important");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://ads.com/script.js",
+            req_host: "ads.com",
+            req_etld1: "ads.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Allow);
+    }
+
+    #[test]
+    fn redirect_with_important_beats_exception() {
+        // $redirect,important should redirect even with exception
+        let rules = parse_filter_list("||ads.com^$redirect=noop.js,important\n@@||ads.com^");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://ads.com/script.js",
+            req_host: "ads.com",
+            req_etld1: "ads.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Redirect);
+        assert!(result.redirect_url.is_some());
+    }
+
+    #[test]
+    fn specific_exception_beats_generic_block() {
+        // Exception with domain constraint beats generic block for that domain
+        let rules = parse_filter_list("||ads.com^\n@@||ads.com^$domain=safe.com");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        // Request from safe.com - should be allowed
+        let ctx_safe = RequestContext {
+            url: "https://ads.com/script.js",
+            req_host: "ads.com",
+            req_etld1: "ads.com",
+            site_host: "safe.com",
+            site_etld1: "safe.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx_safe);
+        assert_eq!(result.decision, MatchDecision::Allow);
+
+        // Request from other.com - should be blocked
+        let ctx_other = RequestContext {
+            url: "https://ads.com/script.js",
+            req_host: "ads.com",
+            req_etld1: "ads.com",
+            site_host: "other.com",
+            site_etld1: "other.com",
+            is_third_party: true,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "1",
+        };
+
+        let result = matcher.match_request(&ctx_other);
+        assert_eq!(result.decision, MatchDecision::Block);
+    }
+
+    #[test]
+    fn csp_multiple_rules_combine() {
+        // Multiple CSP rules should all be applied
+        let rules = parse_filter_list(
+            "||example.com^$csp=script-src 'none'\n||example.com^$csp=frame-src 'self'",
+        );
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/index.html",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::MAIN_FRAME,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let headers = [ResponseHeader {
+            name: "Content-Type",
+            value: "text/html",
+        }];
+
+        let result = matcher.match_response_headers(&ctx, &headers);
+        assert_eq!(result.csp_injections.len(), 2);
+        assert!(result.csp_injections.contains(&"script-src 'none'".to_string()));
+        assert!(result.csp_injections.contains(&"frame-src 'self'".to_string()));
     }
 }

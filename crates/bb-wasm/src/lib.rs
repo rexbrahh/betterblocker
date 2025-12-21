@@ -355,6 +355,9 @@ pub fn match_cosmetics(
     let _ = js_sys::Reflect::set(&js_result, &"enableGeneric".into(), &JsValue::from(result.enable_generic));
 
     let procedural = js_sys::Array::new();
+    for selector in result.procedural {
+        procedural.push(&JsValue::from_str(&selector));
+    }
     let _ = js_sys::Reflect::set(&js_result, &"procedural".into(), &procedural);
 
     let scriptlets = js_sys::Array::new();

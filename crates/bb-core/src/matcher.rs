@@ -48,6 +48,7 @@ pub struct CosmeticMatchResult {
     pub css: String,
     pub enable_generic: bool,
     pub scriptlets: Vec<ScriptletCall>,
+    pub procedural: Vec<String>,
 }
 
 const NO_OPTION_ID: u32 = 0xFFFF_FFFF;
@@ -250,6 +251,7 @@ impl<'a> Matcher<'a> {
             css: String::new(),
             enable_generic: true,
             scriptlets: Vec::new(),
+            procedural: Vec::new(),
         };
 
         let mut candidates = Vec::new();
@@ -332,6 +334,64 @@ impl<'a> Matcher<'a> {
         }
 
         result.enable_generic = !generichide_disabled;
+
+        if !elemhide_disabled {
+            let mut procedural_specific: HashSet<&str> = HashSet::new();
+            let mut procedural_generic: HashSet<&str> = HashSet::new();
+            let mut procedural_exceptions: HashSet<&str> = HashSet::new();
+
+            let section = self.snapshot.procedural_rules();
+            if section.len() >= 4 {
+                let count = read_u32_le(section, 0) as usize;
+                for idx in 0..count {
+                    let entry_offset = 4 + idx * 16;
+                    if entry_offset + 16 > section.len() {
+                        break;
+                    }
+                    let constraint_offset = read_u32_le(section, entry_offset);
+                    if !self.check_domain_constraints_offset(constraint_offset, ctx) {
+                        continue;
+                    }
+                    let selector_off = read_u32_le(section, entry_offset + 4) as usize;
+                    let selector_len = read_u32_le(section, entry_offset + 8) as usize;
+                    let flags = read_u16_le(section, entry_offset + 12);
+
+                    let selector = match self.snapshot.get_string(selector_off, selector_len) {
+                        Some(value) => value,
+                        None => continue,
+                    };
+
+                    let is_exception = flags & 1 != 0;
+                    let is_generic = flags & (1 << 1) != 0;
+
+                    if is_exception {
+                        procedural_exceptions.insert(selector);
+                    } else if is_generic {
+                        procedural_generic.insert(selector);
+                    } else {
+                        procedural_specific.insert(selector);
+                    }
+                }
+            }
+
+            let mut selectors: Vec<&str> = Vec::new();
+            for selector in procedural_specific {
+                if !procedural_exceptions.contains(selector) {
+                    selectors.push(selector);
+                }
+            }
+            if !generichide_disabled {
+                for selector in procedural_generic {
+                    if !procedural_exceptions.contains(selector) {
+                        selectors.push(selector);
+                    }
+                }
+            }
+
+            for selector in selectors {
+                result.procedural.push(selector.to_string());
+            }
+        }
 
         let section = self.snapshot.scriptlet_rules();
         if section.len() >= 4 {

@@ -9,6 +9,11 @@ interface FilterList {
   enabled: boolean;
   ruleCount: number;
   lastUpdated: string | null;
+  pinned?: boolean;
+  version?: string;
+  homepage?: string;
+  license?: string;
+  source?: string;
 }
 
 interface SnapshotStats {
@@ -35,6 +40,27 @@ interface TraceResponse {
   ok: boolean;
   stats: TraceStats;
   jsonl?: string;
+}
+
+interface PerfBucket {
+  count: number;
+  min: number;
+  max: number;
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+interface PerfStats {
+  enabled: boolean;
+  beforeRequest: PerfBucket;
+  headersReceived: PerfBucket;
+}
+
+interface PerfResponse {
+  ok: boolean;
+  stats: PerfStats;
+  json?: string;
 }
 
 type BgMessage = {
@@ -72,6 +98,23 @@ const pageElements = {
   traceExportBtn: document.getElementById('trace-export-btn') as HTMLButtonElement,
   traceCount: document.getElementById('trace-count') as HTMLElement,
   traceMax: document.getElementById('trace-max') as HTMLElement,
+  perfStatusBadge: document.getElementById('perf-status-badge') as HTMLElement,
+  perfMaxEntries: document.getElementById('perf-max-entries') as HTMLInputElement,
+  perfStartBtn: document.getElementById('perf-start-btn') as HTMLButtonElement,
+  perfStopBtn: document.getElementById('perf-stop-btn') as HTMLButtonElement,
+  perfExportBtn: document.getElementById('perf-export-btn') as HTMLButtonElement,
+  perfBrCount: document.getElementById('perf-br-count') as HTMLElement,
+  perfBrMin: document.getElementById('perf-br-min') as HTMLElement,
+  perfBrP50: document.getElementById('perf-br-p50') as HTMLElement,
+  perfBrP95: document.getElementById('perf-br-p95') as HTMLElement,
+  perfBrP99: document.getElementById('perf-br-p99') as HTMLElement,
+  perfBrMax: document.getElementById('perf-br-max') as HTMLElement,
+  perfHrCount: document.getElementById('perf-hr-count') as HTMLElement,
+  perfHrMin: document.getElementById('perf-hr-min') as HTMLElement,
+  perfHrP50: document.getElementById('perf-hr-p50') as HTMLElement,
+  perfHrP95: document.getElementById('perf-hr-p95') as HTMLElement,
+  perfHrP99: document.getElementById('perf-hr-p99') as HTMLElement,
+  perfHrMax: document.getElementById('perf-hr-max') as HTMLElement,
   toggles: {
     cosmeticsEnabled: document.getElementById('toggle-cosmeticsEnabled') as HTMLInputElement,
     scriptletsEnabled: document.getElementById('toggle-scriptletsEnabled') as HTMLInputElement,
@@ -119,6 +162,10 @@ async function toggleList(id: string, enabled: boolean) {
   const list = lists.find(l => l.id === id);
   
   if (list) {
+    if (list.pinned && !enabled) {
+      alert('Pinned lists cannot be disabled.');
+      return;
+    }
     list.enabled = enabled;
     await saveLists(lists);
     await sendMessage({ type: 'listsChanged' });
@@ -126,9 +173,16 @@ async function toggleList(id: string, enabled: boolean) {
 }
 
 async function removeList(id: string) {
+  const lists = await getLists();
+  const list = lists.find(l => l.id === id);
+  
+  if (list?.pinned) {
+    alert('Pinned lists cannot be removed.');
+    return;
+  }
+  
   if (!confirm('Are you sure you want to remove this filter list?')) return;
 
-  const lists = await getLists();
   const updatedLists = lists.filter(l => l.id !== id);
   
   await saveLists(updatedLists);
@@ -156,6 +210,19 @@ function renderLists(lists: FilterList[]) {
     
     const toggleId = `toggle-${list.id}`;
 
+    const version = list.version ? `<span>Version: ${escapeHtml(list.version)}</span>` : '';
+    const pinned = list.pinned ? '<span>Pinned</span>' : '';
+    const homepage = list.homepage
+      ? `<a href="${escapeHtml(list.homepage)}" target="_blank" rel="noopener">Homepage</a>`
+      : '';
+    const license = list.license
+      ? `<a href="${escapeHtml(list.license)}" target="_blank" rel="noopener">License</a>`
+      : '';
+
+    const isPinned = !!list.pinned;
+    const toggleDisabled = isPinned && list.enabled ? 'disabled' : '';
+    const removeDisabled = isPinned ? 'disabled' : '';
+
     item.innerHTML = `
       <div class="filter-info">
         <span class="filter-name">${escapeHtml(list.name)}</span>
@@ -163,14 +230,18 @@ function renderLists(lists: FilterList[]) {
         <div class="filter-meta">
           <span>Rules: ${list.ruleCount.toLocaleString()}</span>
           <span>Updated: ${formatDate(list.lastUpdated)}</span>
+          ${version}
+          ${pinned}
+          ${homepage}
+          ${license}
         </div>
       </div>
       <div class="filter-actions">
         <label class="toggle-switch">
-          <input type="checkbox" id="${toggleId}" ${list.enabled ? 'checked' : ''}>
+          <input type="checkbox" id="${toggleId}" ${list.enabled ? 'checked' : ''} ${toggleDisabled}>
           <span class="slider"></span>
         </label>
-        <button class="btn danger-text remove-btn" data-id="${list.id}" aria-label="Remove List">
+        <button class="btn danger-text remove-btn" data-id="${list.id}" aria-label="Remove List" ${removeDisabled}>
           Remove
         </button>
       </div>
@@ -337,6 +408,112 @@ async function exportTrace() {
   }
 }
 
+function updatePerfUI(stats: PerfStats) {
+  pageElements.perfStatusBadge.textContent = stats.enabled ? 'Recording' : 'Disabled';
+  pageElements.perfStatusBadge.style.backgroundColor = stats.enabled ? 'var(--success-color)' : '';
+  pageElements.perfStatusBadge.style.color = stats.enabled ? 'white' : '';
+  
+  pageElements.perfStartBtn.disabled = stats.enabled;
+  pageElements.perfStopBtn.disabled = !stats.enabled;
+  
+  const updateBucket = (bucket: PerfBucket, prefix: 'perfBr' | 'perfHr') => {
+    const hasData = bucket.count > 0;
+    
+    if (prefix === 'perfBr') {
+        pageElements.perfBrCount.textContent = bucket.count.toLocaleString();
+        pageElements.perfBrMin.textContent = hasData ? bucket.min.toLocaleString() : '-';
+        pageElements.perfBrP50.textContent = hasData ? bucket.p50.toLocaleString() : '-';
+        pageElements.perfBrP95.textContent = hasData ? bucket.p95.toLocaleString() : '-';
+        pageElements.perfBrP99.textContent = hasData ? bucket.p99.toLocaleString() : '-';
+        pageElements.perfBrMax.textContent = hasData ? bucket.max.toLocaleString() : '-';
+    } else {
+        pageElements.perfHrCount.textContent = bucket.count.toLocaleString();
+        pageElements.perfHrMin.textContent = hasData ? bucket.min.toLocaleString() : '-';
+        pageElements.perfHrP50.textContent = hasData ? bucket.p50.toLocaleString() : '-';
+        pageElements.perfHrP95.textContent = hasData ? bucket.p95.toLocaleString() : '-';
+        pageElements.perfHrP99.textContent = hasData ? bucket.p99.toLocaleString() : '-';
+        pageElements.perfHrMax.textContent = hasData ? bucket.max.toLocaleString() : '-';
+    }
+  };
+
+  updateBucket(stats.beforeRequest, 'perfBr');
+  updateBucket(stats.headersReceived, 'perfHr');
+  
+  pageElements.perfExportBtn.disabled = (stats.beforeRequest.count === 0 && stats.headersReceived.count === 0);
+}
+
+async function getPerfStats() {
+  try {
+    const response: PerfResponse = await sendMessage({ type: 'perf.stats' });
+    if (response && response.stats) {
+      updatePerfUI(response.stats);
+    }
+  } catch (e) {
+    console.warn('Failed to get perf stats', e);
+  }
+}
+
+async function startPerf() {
+  const maxEntriesInput = pageElements.perfMaxEntries.value;
+  const parsedMaxEntries = maxEntriesInput ? parseInt(maxEntriesInput, 10) : undefined;
+  const message: BgMessage = { type: 'perf.start' };
+  if (typeof parsedMaxEntries === 'number' && Number.isFinite(parsedMaxEntries)) {
+    message.maxEntries = parsedMaxEntries;
+  }
+
+  try {
+    const response: PerfResponse = await sendMessage(message);
+    if (response && response.stats) {
+      updatePerfUI(response.stats);
+    }
+  } catch (e) {
+    console.error('Failed to start perf', e);
+  }
+}
+
+async function stopPerf() {
+  try {
+    const response: PerfResponse = await sendMessage({ type: 'perf.stop' });
+    if (response && response.stats) {
+      updatePerfUI(response.stats);
+    }
+  } catch (e) {
+    console.error('Failed to stop perf', e);
+  }
+}
+
+async function exportPerf() {
+  const btn = pageElements.perfExportBtn;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting...';
+
+  try {
+    const response: PerfResponse = await sendMessage({ type: 'perf.export' });
+    if (response && response.ok && response.json) {
+      const blob = new Blob([response.json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'perf.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+    
+    if (response && response.stats) {
+        updatePerfUI(response.stats);
+    }
+  } catch (e) {
+    console.error('Failed to export perf', e);
+    alert('Failed to export perf data');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText || 'Export JSON';
+  }
+}
+
 async function loadSettings() {
   try {
     const response: { settings?: UserSettings } = await sendMessage({ type: 'settings.get' });
@@ -374,11 +551,16 @@ async function init() {
   renderLists(lists);
   loadStats();
   getTraceStats();
+  getPerfStats();
   loadSettings();
 
   pageElements.traceStartBtn.addEventListener('click', startTrace);
   pageElements.traceStopBtn.addEventListener('click', stopTrace);
   pageElements.traceExportBtn.addEventListener('click', exportTrace);
+
+  pageElements.perfStartBtn.addEventListener('click', startPerf);
+  pageElements.perfStopBtn.addEventListener('click', stopPerf);
+  pageElements.perfExportBtn.addEventListener('click', exportPerf);
 
   for (const [key, element] of Object.entries(pageElements.toggles)) {
     element.addEventListener('change', (e) => {

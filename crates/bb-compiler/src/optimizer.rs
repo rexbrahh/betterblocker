@@ -80,6 +80,7 @@ struct RuleKey {
     csp: Option<String>,
     header: Option<crate::parser::HeaderSpec>,
     cosmetic: Option<crate::parser::CosmeticRule>,
+    procedural: Option<crate::parser::ProceduralRule>,
     scriptlet: Option<crate::parser::ScriptletRule>,
     responseheader: Option<crate::parser::ResponseHeaderRule>,
 }
@@ -101,6 +102,7 @@ struct BadfilterKey {
     csp: Option<String>,
     header: Option<crate::parser::HeaderSpec>,
     cosmetic: Option<crate::parser::CosmeticRule>,
+    procedural: Option<crate::parser::ProceduralRule>,
     scriptlet: Option<crate::parser::ScriptletRule>,
     responseheader: Option<crate::parser::ResponseHeaderRule>,
 }
@@ -131,6 +133,7 @@ impl From<&CompiledRule> for RuleKey {
             csp: rule.csp.clone(),
             header: rule.header.clone(),
             cosmetic: rule.cosmetic.clone(),
+            procedural: rule.procedural.clone(),
             scriptlet: rule.scriptlet.clone(),
             responseheader: rule.responseheader.clone(),
         }
@@ -162,6 +165,7 @@ impl From<&CompiledRule> for BadfilterKey {
             csp: rule.csp.clone(),
             header: rule.header.clone(),
             cosmetic: rule.cosmetic.clone(),
+            procedural: rule.procedural.clone(),
             scriptlet: rule.scriptlet.clone(),
             responseheader: rule.responseheader.clone(),
         }

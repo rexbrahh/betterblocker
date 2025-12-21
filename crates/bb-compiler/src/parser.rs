@@ -31,6 +31,13 @@ pub struct ScriptletRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProceduralRule {
+    pub selector: String,
+    pub is_exception: bool,
+    pub is_generic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResponseHeaderRule {
     pub header: String,
     pub is_exception: bool,
@@ -53,6 +60,7 @@ pub struct CompiledRule {
     pub csp: Option<String>,
     pub header: Option<HeaderSpec>,
     pub cosmetic: Option<CosmeticRule>,
+    pub procedural: Option<ProceduralRule>,
     pub scriptlet: Option<ScriptletRule>,
     pub responseheader: Option<ResponseHeaderRule>,
     pub is_badfilter: bool,
@@ -81,6 +89,11 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
         }
 
         if let Some(rule) = parse_scriptlet_line(line) {
+            rules.push(rule);
+            continue;
+        }
+
+        if let Some(rule) = parse_procedural_line(line) {
             rules.push(rule);
             continue;
         }
@@ -161,6 +174,7 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
                     csp: csp.clone(),
                     header: header.clone(),
                     cosmetic: None,
+                    procedural: None,
                     scriptlet: None,
                     responseheader: None,
                     is_badfilter,
@@ -186,6 +200,7 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
                     csp: csp.clone(),
                     header: header.clone(),
                     cosmetic: None,
+                    procedural: None,
                     scriptlet: None,
                     responseheader: None,
                     is_badfilter,
@@ -212,6 +227,7 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
                 csp,
                 header,
                 cosmetic: None,
+                procedural: None,
                 scriptlet: None,
                 responseheader: None,
                 is_badfilter,
@@ -721,6 +737,7 @@ fn make_special_rule() -> CompiledRule {
         csp: None,
         header: None,
         cosmetic: None,
+        procedural: None,
         scriptlet: None,
         responseheader: None,
         is_badfilter: false,
@@ -801,6 +818,61 @@ fn parse_scriptlet_line(line: &str) -> Option<CompiledRule> {
     Some(rule)
 }
 
+fn is_procedural_selector(selector: &str) -> bool {
+    let lower = selector.to_ascii_lowercase();
+    lower.contains(":has-text(")
+        || lower.contains(":matches-css(")
+        || lower.contains(":xpath(")
+        || lower.contains(":upward(")
+        || lower.contains(":remove(")
+        || lower.contains(":style(")
+}
+
+fn parse_procedural_line(line: &str) -> Option<CompiledRule> {
+    let exception_marker = "#@?#";
+    let normal_marker = "#?#";
+
+    let (marker, is_exception, marker_pos) = if let Some(pos) = line.find(exception_marker) {
+        (exception_marker, true, pos)
+    } else if let Some(pos) = line.find(normal_marker) {
+        (normal_marker, false, pos)
+    } else if let Some(pos) = line.find("#@#") {
+        let selector = line[pos + 3..].trim();
+        if is_procedural_selector(selector) {
+            ("#@#", true, pos)
+        } else {
+            return None;
+        }
+    } else if let Some(pos) = line.find("##") {
+        let selector = line[pos + 2..].trim();
+        if is_procedural_selector(selector) {
+            ("##", false, pos)
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
+    let domain_part = line[..marker_pos].trim();
+    let selector = line[marker_pos + marker.len()..].trim();
+    if selector.is_empty() || selector.starts_with("+js(") {
+        return None;
+    }
+    if !is_procedural_selector(selector) {
+        return None;
+    }
+
+    let mut rule = make_special_rule();
+    rule.domain_constraints = parse_cosmetic_domains(domain_part);
+    rule.procedural = Some(ProceduralRule {
+        selector: selector.to_string(),
+        is_exception,
+        is_generic: domain_part.is_empty(),
+    });
+    Some(rule)
+}
+
 fn parse_cosmetic_line(line: &str) -> Option<CompiledRule> {
     let exception_marker = "#@#";
     let normal_marker = "##";
@@ -827,8 +899,7 @@ fn parse_cosmetic_line(line: &str) -> Option<CompiledRule> {
         return None;
     }
 
-    if selector.contains(":has(")
-        || selector.contains(":has-text(")
+    if selector.contains(":has-text(")
         || selector.contains(":matches-css(")
         || selector.contains(":xpath(")
         || selector.contains(":upward(")

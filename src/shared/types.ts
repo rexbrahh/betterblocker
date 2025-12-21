@@ -268,8 +268,7 @@ export interface CosmeticPayload {
   css: string;
   /** Whether generic cosmetics are enabled for this page */
   enableGeneric: boolean;
-  /** Procedural filter programs to execute */
-  procedural: ProceduralProgram[];
+  procedural: string[];
   /** Scriptlets to inject */
   scriptlets: ScriptletCall[];
 }

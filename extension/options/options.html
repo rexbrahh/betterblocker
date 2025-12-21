@@ -155,6 +155,50 @@
         </div>
       </section>
 
+      <section class="card" id="perf-section">
+        <div class="card-header">
+          <h2>Performance Telemetry</h2>
+          <span class="badge" id="perf-status-badge">Disabled</span>
+        </div>
+        <div class="card-body">
+          <div class="trace-controls">
+            <div class="form-group">
+              <label for="perf-max-entries">Max Entries</label>
+              <input type="number" id="perf-max-entries" placeholder="Default: 100000">
+            </div>
+            <div class="button-group">
+              <button id="perf-start-btn" class="btn primary">Start Telemetry</button>
+              <button id="perf-stop-btn" class="btn secondary">Stop</button>
+              <button id="perf-export-btn" class="btn secondary">Export JSON</button>
+            </div>
+          </div>
+          
+          <div style="padding: 0 20px; margin-top: 10px;">
+            <h3 style="margin: 0; font-size: 14px; color: var(--text-secondary); text-transform: uppercase;">beforeRequest</h3>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-item"><span class="stat-label">Count</span><span class="stat-value" id="perf-br-count">-</span></div>
+            <div class="stat-item"><span class="stat-label">Min (µs)</span><span class="stat-value" id="perf-br-min">-</span></div>
+            <div class="stat-item"><span class="stat-label">P50 (µs)</span><span class="stat-value" id="perf-br-p50">-</span></div>
+            <div class="stat-item"><span class="stat-label">P95 (µs)</span><span class="stat-value" id="perf-br-p95">-</span></div>
+            <div class="stat-item"><span class="stat-label">P99 (µs)</span><span class="stat-value" id="perf-br-p99">-</span></div>
+            <div class="stat-item"><span class="stat-label">Max (µs)</span><span class="stat-value" id="perf-br-max">-</span></div>
+          </div>
+
+          <div style="padding: 0 20px; border-top: 1px solid var(--border-color); padding-top: 20px;">
+            <h3 style="margin: 0; font-size: 14px; color: var(--text-secondary); text-transform: uppercase;">headersReceived</h3>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-item"><span class="stat-label">Count</span><span class="stat-value" id="perf-hr-count">-</span></div>
+            <div class="stat-item"><span class="stat-label">Min (µs)</span><span class="stat-value" id="perf-hr-min">-</span></div>
+            <div class="stat-item"><span class="stat-label">P50 (µs)</span><span class="stat-value" id="perf-hr-p50">-</span></div>
+            <div class="stat-item"><span class="stat-label">P95 (µs)</span><span class="stat-value" id="perf-hr-p95">-</span></div>
+            <div class="stat-item"><span class="stat-label">P99 (µs)</span><span class="stat-value" id="perf-hr-p99">-</span></div>
+            <div class="stat-item"><span class="stat-label">Max (µs)</span><span class="stat-value" id="perf-hr-max">-</span></div>
+          </div>
+        </div>
+      </section>
+
       <section class="card stats-section">
         <div class="card-header">
           <h2>Statistics & Info</h2>

@@ -17,6 +17,58 @@
   }
 
   var MAX_SELECTOR_MATCHES = 200;
+  var MAX_SCRIPTLET_CALLS = 32;
+  var MAX_SCRIPTLET_ARGS = 8;
+
+  function runCalls(calls) {
+    if (!Array.isArray(calls)) {
+      return;
+    }
+    var limit = Math.min(calls.length, MAX_SCRIPTLET_CALLS);
+    for (var i = 0; i < limit; i++) {
+      var call = calls[i];
+      if (!call || typeof call.name !== 'string') {
+        continue;
+      }
+      var fn = registry[call.name];
+      if (typeof fn !== 'function') {
+        continue;
+      }
+      var args = Array.isArray(call.args) ? call.args.slice(0, MAX_SCRIPTLET_ARGS) : [];
+      try {
+        fn(args);
+      } catch (e) {
+        void e;
+      }
+    }
+  }
+
+  function runQueuedCalls() {
+    var root = document.documentElement;
+    if (!root) {
+      return;
+    }
+    var raw = root.getAttribute('data-bb-scriptlets');
+    if (!raw) {
+      return;
+    }
+    root.removeAttribute('data-bb-scriptlets');
+    try {
+      var calls = JSON.parse(raw);
+      runCalls(calls);
+    } catch (e) {
+      void e;
+    }
+  }
+
+  function onScriptletEvent(event) {
+    var detail = event && event.detail;
+    runCalls(detail);
+  }
+
+  if (document && document.addEventListener) {
+    document.addEventListener('bb-scriptlets', onScriptletEvent);
+  }
 
   function parseValue(raw) {
     if (raw === undefined) {
@@ -177,4 +229,6 @@
   registry['add-class'] = addClass;
   registry['hide-by-selector'] = hideBySelector;
   registry['remove-by-selector'] = removeBySelector;
+
+  runQueuedCalls();
 })();

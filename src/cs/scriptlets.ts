@@ -159,3 +159,5 @@ export const scriptlets: Record<string, ScriptletFn> = {
   'hide-by-selector': hideBySelector,
   'remove-by-selector': removeBySelector,
 };
+
+export const pageContextScriptlets = new Set(['set-constant']);

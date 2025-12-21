@@ -9,6 +9,7 @@
     "webRequestBlocking",
     "storage",
     "tabs",
+    "alarms",
     "<all_urls>"
   ],
 
@@ -30,10 +31,8 @@
   ],
 
   "web_accessible_resources": [
-    "resources/redirects/*",
-    "resources/scriptlets/*",
-    "wasm/*",
-    "data/*"
+    "resources/redirects/noop.js",
+    "resources/scriptlets/registry.js"
   ],
 
   "icons": {
