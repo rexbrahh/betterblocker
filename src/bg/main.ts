@@ -61,6 +61,8 @@ const DEFAULT_LISTS: FilterList[] = [
 ];
 const UPDATE_ALARM_NAME = 'listUpdate';
 const UPDATE_INTERVAL_MINUTES = 24 * 60;
+const LIST_FETCH_TIMEOUT_MS = 30_000;
+const LIST_MAX_BYTES = 25 * 1024 * 1024;
 const topFrameByTab = new Map<number, string>();
 const blockedByTab = new Map<number, number>();
 const mainFrameRequestIdByTab = new Map<number, string>();
@@ -491,13 +493,22 @@ async function loadSnapshot(): Promise<Uint8Array> {
   return loadBundledSnapshot();
 }
 
-async function swapMatcher(snapshot: Uint8Array | null): Promise<void> {
+async function swapMatcher(snapshot: Uint8Array | null): Promise<boolean> {
   const cacheBust = Date.now().toString(36);
   const nextWasm = await loadWasm(cacheBust);
+
   if (snapshot && snapshot.length > 0) {
-    nextWasm.init(snapshot);
+    try {
+      nextWasm.init(snapshot);
+      nextWasm.get_snapshot_info();
+    } catch (e) {
+      console.warn('[BetterBlocker] Snapshot validation failed during swap:', e);
+      return false;
+    }
   }
+
   wasm = nextWasm;
+  return true;
 }
 
 async function initialize(): Promise<void> {
@@ -593,12 +604,76 @@ function setupUpdateSchedule(): void {
   });
 }
 
-async function fetchListText(url: string): Promise<string> {
-  const response = await fetch(url, { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch list: ${response.status}`);
+async function readResponseTextWithLimit(
+  response: Response,
+  controller: AbortController,
+  maxBytes: number
+): Promise<string> {
+  if (!response.body) {
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > maxBytes) {
+      throw new Error(`List exceeds max size of ${maxBytes} bytes`);
+    }
+    return new TextDecoder('utf-8').decode(buffer);
   }
-  return response.text();
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (!value) {
+      continue;
+    }
+    total += value.byteLength;
+    if (total > maxBytes) {
+      controller.abort();
+      throw new Error(`List exceeds max size of ${maxBytes} bytes`);
+    }
+    chunks.push(value);
+  }
+
+  const data = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return new TextDecoder('utf-8').decode(data);
+}
+
+async function fetchListText(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), LIST_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch list: ${response.status}`);
+    }
+
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) {
+      const length = Number(contentLength);
+      if (Number.isFinite(length) && length > LIST_MAX_BYTES) {
+        throw new Error(`List exceeds max size of ${LIST_MAX_BYTES} bytes`);
+      }
+    }
+
+    return await readResponseTextWithLimit(response, controller, LIST_MAX_BYTES);
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`List fetch timed out after ${LIST_FETCH_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function compileAndStoreLists(): Promise<{ stats: SnapshotStats | null; snapshot: Uint8Array | null }> {
@@ -646,7 +721,10 @@ async function compileAndStoreLists(): Promise<{ stats: SnapshotStats | null; sn
   });
 
   const snapshotBytes = compileResult.snapshot;
-  await swapMatcher(snapshotBytes);
+  const swapped = await swapMatcher(snapshotBytes);
+  if (!swapped) {
+    throw new Error('Snapshot validation failed during swap');
+  }
 
   const stats: SnapshotStats = {
     rulesBefore: compileResult.rulesBefore,

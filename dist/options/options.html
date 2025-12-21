@@ -50,6 +50,81 @@
         </div>
       </section>
 
+      <section class="card">
+        <div class="card-header">
+          <h2>Feature Toggles</h2>
+        </div>
+        <div class="card-body">
+          <div class="settings-list">
+            <div class="settings-item">
+              <div class="settings-info">
+                <span class="settings-label">Cosmetic Filtering</span>
+                <span class="settings-desc">Hide elements and apply CSS rules</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggle-cosmeticsEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+            
+            <div class="settings-item">
+              <div class="settings-info">
+                <span class="settings-label">Scriptlet Injection</span>
+                <span class="settings-desc">Inject neutralization scripts (snippets)</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggle-scriptletsEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="settings-item">
+              <div class="settings-info">
+                <span class="settings-label">Dynamic Filtering</span>
+                <span class="settings-desc">Block requests based on context/party</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggle-dynamicFilteringEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="settings-item">
+              <div class="settings-info">
+                <span class="settings-label">Remove Parameters</span>
+                <span class="settings-desc">Strip tracking parameters from URLs</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggle-removeparamEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="settings-item">
+              <div class="settings-info">
+                <span class="settings-label">CSP Injection</span>
+                <span class="settings-desc">Inject Content Security Policy headers</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggle-cspEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="settings-item">
+              <div class="settings-info">
+                <span class="settings-label">Response Header Filtering</span>
+                <span class="settings-desc">Filter based on response headers</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggle-responseHeaderEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="card trace-section">
         <div class="card-header">
           <h2>Trace Recorder</h2>
@@ -76,6 +151,50 @@
               <span class="stat-label">Max Capacity</span>
               <span class="stat-value" id="trace-max">-</span>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="perf-section">
+        <div class="card-header">
+          <h2>Performance Telemetry</h2>
+          <span class="badge" id="perf-status-badge">Disabled</span>
+        </div>
+        <div class="card-body">
+          <div class="trace-controls">
+            <div class="form-group">
+              <label for="perf-max-entries">Max Entries</label>
+              <input type="number" id="perf-max-entries" placeholder="Default: 100000">
+            </div>
+            <div class="button-group">
+              <button id="perf-start-btn" class="btn primary">Start Telemetry</button>
+              <button id="perf-stop-btn" class="btn secondary">Stop</button>
+              <button id="perf-export-btn" class="btn secondary">Export JSON</button>
+            </div>
+          </div>
+          
+          <div style="padding: 0 20px; margin-top: 10px;">
+            <h3 style="margin: 0; font-size: 14px; color: var(--text-secondary); text-transform: uppercase;">beforeRequest</h3>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-item"><span class="stat-label">Count</span><span class="stat-value" id="perf-br-count">-</span></div>
+            <div class="stat-item"><span class="stat-label">Min (µs)</span><span class="stat-value" id="perf-br-min">-</span></div>
+            <div class="stat-item"><span class="stat-label">P50 (µs)</span><span class="stat-value" id="perf-br-p50">-</span></div>
+            <div class="stat-item"><span class="stat-label">P95 (µs)</span><span class="stat-value" id="perf-br-p95">-</span></div>
+            <div class="stat-item"><span class="stat-label">P99 (µs)</span><span class="stat-value" id="perf-br-p99">-</span></div>
+            <div class="stat-item"><span class="stat-label">Max (µs)</span><span class="stat-value" id="perf-br-max">-</span></div>
+          </div>
+
+          <div style="padding: 0 20px; border-top: 1px solid var(--border-color); padding-top: 20px;">
+            <h3 style="margin: 0; font-size: 14px; color: var(--text-secondary); text-transform: uppercase;">headersReceived</h3>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-item"><span class="stat-label">Count</span><span class="stat-value" id="perf-hr-count">-</span></div>
+            <div class="stat-item"><span class="stat-label">Min (µs)</span><span class="stat-value" id="perf-hr-min">-</span></div>
+            <div class="stat-item"><span class="stat-label">P50 (µs)</span><span class="stat-value" id="perf-hr-p50">-</span></div>
+            <div class="stat-item"><span class="stat-label">P95 (µs)</span><span class="stat-value" id="perf-hr-p95">-</span></div>
+            <div class="stat-item"><span class="stat-label">P99 (µs)</span><span class="stat-value" id="perf-hr-p99">-</span></div>
+            <div class="stat-item"><span class="stat-label">Max (µs)</span><span class="stat-value" id="perf-hr-max">-</span></div>
           </div>
         </div>
       </section>

@@ -61,6 +61,17 @@ jobs:
       - name: Check bundled lists compile
         run: cargo run -p bb-cli --release -- check -i extension/data/oisd_big_abp.txt -i extension/data/ultimate.txt --min-parse-ratio 0.99
 
+      - name: Check performance budgets
+        run: bun run perf-budget
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+
+      - name: Run e2e smoke tests
+        run: npx playwright test --project=chromium-extension
+        env:
+          DISPLAY: ':99'
+
       - name: Upload unsigned extension artifact
         uses: actions/upload-artifact@v4
         with:
