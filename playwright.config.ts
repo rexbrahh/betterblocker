@@ -17,7 +17,7 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium-extension',
-      testMatch: '**/*.spec.ts',
+      testMatch: '**/*.pw.ts',
     },
   ],
 });
