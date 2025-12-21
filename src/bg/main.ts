@@ -303,9 +303,25 @@ function typeMatches(ruleType: string, requestType: string): boolean {
   return normalized === requestType;
 }
 
-function matchDynamicRules(details: RequestDetails, initiator?: string): DynamicAction {
+type DynamicMatch = { action: DynamicAction; rule: DynamicRule | undefined };
+
+function isOverlyBroadDynamicRule(rule?: DynamicRule): boolean {
+  if (!rule) {
+    return false;
+  }
+  const sitePattern = rule.site?.toLowerCase() ?? '*';
+  const targetPattern = rule.target?.toLowerCase() ?? '*';
+  const typePattern = rule.type?.toLowerCase() ?? '*';
+  const isGlobalSite = sitePattern === '*';
+  const isGlobalTarget = targetPattern === '*';
+  const isMainFrameType =
+    typePattern === '*' || typePattern === 'main_frame' || typePattern === 'document';
+  return isGlobalSite && isGlobalTarget && isMainFrameType;
+}
+
+function matchDynamicRules(details: RequestDetails, initiator?: string): DynamicMatch {
   if (!settings.dynamicFilteringEnabled || dynamicRules.length === 0) {
-    return DynamicAction.NOOP;
+    return { action: DynamicAction.NOOP, rule: undefined };
   }
 
   const reqHost = extractHost(details.url);
@@ -316,6 +332,7 @@ function matchDynamicRules(details: RequestDetails, initiator?: string): Dynamic
   const isThirdParty = siteEtld1.length > 0 && reqEtld1.length > 0 && siteEtld1 !== reqEtld1;
 
   let bestAction = DynamicAction.NOOP;
+  let bestRule: DynamicRule | undefined;
   let bestScore = -1;
   let bestIndex = -1;
 
@@ -347,10 +364,11 @@ function matchDynamicRules(details: RequestDetails, initiator?: string): Dynamic
       bestScore = score;
       bestIndex = i;
       bestAction = rule.action;
+      bestRule = rule;
     }
   }
 
-  return bestAction;
+  return { action: bestAction, rule: bestRule };
 }
 
 function normalizeContextUrl(value?: string): string | undefined {
@@ -830,14 +848,18 @@ function onBeforeRequest(
     return finalize(undefined);
   }
 
-  const dynamicDecision = matchDynamicRules(details, initiator);
+  const dynamicMatch = matchDynamicRules(details, initiator);
 
-  if (dynamicDecision === DynamicAction.BLOCK) {
+  if (dynamicMatch.action === DynamicAction.BLOCK) {
+    if (details.type === 'main_frame' && isOverlyBroadDynamicRule(dynamicMatch.rule)) {
+      console.warn('[BetterBlocker] Skipping overly broad dynamic rule for main_frame', dynamicMatch.rule);
+      return finalize(undefined);
+    }
     incrementTabBlockCount(details.tabId);
     return finalize({ cancel: true });
   }
 
-  if (dynamicDecision === DynamicAction.ALLOW) {
+  if (dynamicMatch.action === DynamicAction.ALLOW) {
     return finalize(undefined);
   }
 
@@ -1068,7 +1090,14 @@ function setupMessageHandlers(): void {
           const tabId = sender.tab?.id ?? -1;
           const frameId = sender.frameId ?? 0;
           const requestId = message.requestId ?? 'cosmetic';
-          const result = wasm.match_cosmetics(url, 'main_frame', undefined, tabId, frameId, requestId);
+          let result: { css: string; enableGeneric: boolean; procedural: string[]; scriptlets: { name: string; args: string[] }[] };
+          try {
+            result = wasm.match_cosmetics(url, 'main_frame', undefined, tabId, frameId, requestId);
+          } catch (e) {
+            console.warn('[BetterBlocker] Cosmetic match error:', e);
+            sendResponse({ css: '', enableGeneric: true, procedural: [], scriptlets: [] });
+            return true;
+          }
           if (!settings.cosmeticsEnabled) {
             result.css = '';
             result.enableGeneric = false;

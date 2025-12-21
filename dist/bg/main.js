@@ -422,9 +422,21 @@
     }
     return normalized === requestType;
   }
+  function isOverlyBroadDynamicRule(rule) {
+    if (!rule) {
+      return false;
+    }
+    const sitePattern = rule.site?.toLowerCase() ?? "*";
+    const targetPattern = rule.target?.toLowerCase() ?? "*";
+    const typePattern = rule.type?.toLowerCase() ?? "*";
+    const isGlobalSite = sitePattern === "*";
+    const isGlobalTarget = targetPattern === "*";
+    const isMainFrameType = typePattern === "*" || typePattern === "main_frame" || typePattern === "document";
+    return isGlobalSite && isGlobalTarget && isMainFrameType;
+  }
   function matchDynamicRules(details, initiator) {
     if (!settings.dynamicFilteringEnabled || dynamicRules.length === 0) {
-      return 0 /* NOOP */;
+      return { action: 0 /* NOOP */, rule: void 0 };
     }
     const reqHost = extractHost(details.url);
     const siteUrl = initiator ?? details.url;
@@ -433,6 +445,7 @@
     const reqEtld1 = getEtld1(reqHost);
     const isThirdParty = siteEtld1.length > 0 && reqEtld1.length > 0 && siteEtld1 !== reqEtld1;
     let bestAction = 0 /* NOOP */;
+    let bestRule;
     let bestScore = -1;
     let bestIndex = -1;
     for (let i = 0;i < dynamicRules.length; i++) {
@@ -463,9 +476,10 @@
         bestScore = score;
         bestIndex = i;
         bestAction = rule.action;
+        bestRule = rule;
       }
     }
-    return bestAction;
+    return { action: bestAction, rule: bestRule };
   }
   function normalizeContextUrl(value) {
     if (!value) {
@@ -804,12 +818,16 @@
     if (isSiteDisabled(initiator ?? details.url)) {
       return finalize(undefined);
     }
-    const dynamicDecision = matchDynamicRules(details, initiator);
-    if (dynamicDecision === 1 /* BLOCK */) {
+    const dynamicMatch = matchDynamicRules(details, initiator);
+    if (dynamicMatch.action === 1 /* BLOCK */) {
+      if (details.type === "main_frame" && isOverlyBroadDynamicRule(dynamicMatch.rule)) {
+        console.warn("[BetterBlocker] Skipping overly broad dynamic rule for main_frame", dynamicMatch.rule);
+        return finalize(undefined);
+      }
       incrementTabBlockCount(details.tabId);
       return finalize({ cancel: true });
     }
-    if (dynamicDecision === 2 /* ALLOW */) {
+    if (dynamicMatch.action === 2 /* ALLOW */) {
       return finalize(undefined);
     }
     try {
@@ -954,7 +972,14 @@
           const tabId = sender.tab?.id ?? -1;
           const frameId = sender.frameId ?? 0;
           const requestId = message.requestId ?? "cosmetic";
-          const result = wasm.match_cosmetics(url, "main_frame", undefined, tabId, frameId, requestId);
+          let result;
+          try {
+            result = wasm.match_cosmetics(url, "main_frame", undefined, tabId, frameId, requestId);
+          } catch (e) {
+            console.warn("[BetterBlocker] Cosmetic match error:", e);
+            sendResponse({ css: "", enableGeneric: true, procedural: [], scriptlets: [] });
+            return true;
+          }
           if (!settings.cosmeticsEnabled) {
             result.css = "";
             result.enableGeneric = false;

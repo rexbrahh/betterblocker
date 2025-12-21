@@ -4,7 +4,8 @@
     return new Promise((resolve) => {
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
-          console.warn("Message error:", chrome.runtime.lastError);
+          const errorMessage = chrome.runtime.lastError.message ?? String(chrome.runtime.lastError);
+          console.warn("Message error:", message.type, errorMessage);
           resolve({});
         } else {
           resolve(response);
