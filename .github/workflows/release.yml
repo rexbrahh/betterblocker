@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.repository == 'rexbrahh/betterblocker' && startsWith(github.ref, 'refs/tags/v')
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run Rust tests
+        run: cargo test --all
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked || true
+
+      - name: Build WASM
+        run: bun run build:wasm
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run TypeScript tests
+        run: bun test
+
+      - name: Build extension
+        run: bun run dist
+
+      - name: Write private key
+        run: |
+          echo "${{ secrets.CRX_PRIVATE_KEY_B64 }}" | base64 -d > crx.pem
+          chmod 600 crx.pem
+
+      - name: Pack CRX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
+          CHROME_BIN=$(command -v chromium || command -v chromium-browser)
+          "$CHROME_BIN" --pack-extension="$(pwd)/dist" --pack-extension-key="$(pwd)/crx.pem"
+          ls -lah
+
+      - name: Prepare Pages site
+        run: |
+          mkdir -p site/releases
+          cp dist.crx site/releases/betterblocker.crx
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > site/update.xml <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+            <app appid="${{ secrets.EXTENSION_ID }}">
+              <updatecheck codebase="https://rexbrahh.github.io/betterblocker/releases/betterblocker.crx"
+                           version="$VERSION" />
+            </app>
+          </gupdate>
+          EOF
+
+          cat > site/index.html <<EOF
+          <!DOCTYPE html>
+          <html>
+          <head><title>BetterBlocker</title></head>
+          <body>
+            <h1>BetterBlocker</h1>
+            <p>Version: $VERSION</p>
+            <ul>
+              <li><a href="update.xml">update.xml</a></li>
+              <li><a href="releases/betterblocker.crx">betterblocker.crx</a></li>
+            </ul>
+          </body>
+          </html>
+          EOF
+
+      - name: Shred private key
+        if: always()
+        run: |
+          if [ -f crx.pem ]; then
+            shred -u crx.pem 2>/dev/null || rm -f crx.pem
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

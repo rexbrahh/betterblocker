@@ -3,6 +3,7 @@
   "name": "BetterBlocker",
   "version": "0.1.0",
   "description": "Ultra-fast content blocker with uBO-class feature coverage",
+  "update_url": "https://rexbrahh.github.io/betterblocker/update.xml",
 
   "permissions": [
     "webRequest",

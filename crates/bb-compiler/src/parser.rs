@@ -662,8 +662,20 @@ fn scheme_mask(name: &str) -> Option<u8> {
     }
 }
 
+fn is_cosmetic_marker(line: &str) -> bool {
+    line.starts_with("##")
+        || line.starts_with("#@#")
+        || line.starts_with("#?#")
+        || line.starts_with("#@?#")
+        || line.starts_with("##+js(")
+        || line.starts_with("#@#+js(")
+}
+
 fn is_comment_line(line: &str) -> bool {
-    line.starts_with('!') || line.starts_with('[') || line.starts_with('#')
+    if line.starts_with('!') || line.starts_with('[') {
+        return true;
+    }
+    line.starts_with('#') && !is_cosmetic_marker(line)
 }
 
 fn parse_host_anchor_rule(line: &str) -> Option<String> {

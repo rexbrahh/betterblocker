@@ -1053,6 +1053,7 @@ mod tests {
     use bb_core::snapshot::Snapshot;
     use bb_core::types::{MatchDecision, RequestContext, RequestType, SchemeMask};
 
+    use crate::optimizer::optimize_rules;
     use crate::parser::parse_filter_list;
 
     use super::build_snapshot;
@@ -1636,7 +1637,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO: procedural parsing for generic rules needs investigation"]
     fn procedural_rules_respect_generichide_and_elemhide() {
         let rules = parse_filter_list("#?#.ad:has-text(foo)");
         let bytes = build_snapshot(&rules);
@@ -1678,10 +1678,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO: badfilter implementation needs completion"]
     fn badfilter_cancels_block_rule() {
         // Block rule with matching badfilter should be cancelled
-        let rules = parse_filter_list("||ads.com^\n||ads.com^$badfilter");
+        let mut rules = parse_filter_list("||ads.com^\n||ads.com^$badfilter");
+        optimize_rules(&mut rules);
         let bytes = build_snapshot(&rules);
         let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
         let matcher = Matcher::new(&snapshot);
@@ -1705,10 +1705,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO: badfilter implementation needs completion"]
     fn badfilter_cancels_exception_rule() {
         // Exception rule with matching badfilter should be cancelled, allowing block
-        let rules = parse_filter_list("||ads.com^\n@@||ads.com^\n@@||ads.com^$badfilter");
+        let mut rules = parse_filter_list("||ads.com^\n@@||ads.com^\n@@||ads.com^$badfilter");
+        optimize_rules(&mut rules);
         let bytes = build_snapshot(&rules);
         let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
         let matcher = Matcher::new(&snapshot);
@@ -1732,7 +1732,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO: important exception precedence needs review"]
     fn important_exception_beats_important_block() {
         // @@$important should beat $important block
         let rules = parse_filter_list("||ads.com^$important\n@@||ads.com^$important");

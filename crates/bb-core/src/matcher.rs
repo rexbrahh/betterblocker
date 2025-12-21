@@ -560,10 +560,11 @@ impl<'a> Matcher<'a> {
                 if legacy_domain_sets {
                     let rule_id = value as usize;
                     if self.check_rule_options(rule_id, ctx) && self.check_domain_constraints(rule_id, ctx) {
+                        let flags = RuleFlags::from_bits_truncate(rules.flags(rule_id));
                         candidates.push(MatchCandidate {
                             rule_id,
                             action: RuleAction::Allow,
-                            is_important: false,
+                            is_important: flags.contains(RuleFlags::IMPORTANT),
                             priority: 0,
                         });
                     }
@@ -572,10 +573,11 @@ impl<'a> Matcher<'a> {
                     for rule_id in rule_ids {
                         let rule_id = rule_id as usize;
                         if self.check_rule_options(rule_id, ctx) && self.check_domain_constraints(rule_id, ctx) {
+                            let flags = RuleFlags::from_bits_truncate(rules.flags(rule_id));
                             candidates.push(MatchCandidate {
                                 rule_id,
                                 action: RuleAction::Allow,
-                                is_important: false,
+                                is_important: flags.contains(RuleFlags::IMPORTANT),
                                 priority: 0,
                             });
                         }
@@ -901,6 +903,7 @@ impl<'a> Matcher<'a> {
         let rules = self.snapshot.rules();
 
         let mut best_important_block: Option<&MatchCandidate> = None;
+        let mut best_important_allow: Option<&MatchCandidate> = None;
         let mut best_allow: Option<&MatchCandidate> = None;
         let mut best_block: Option<&MatchCandidate> = None;
         let mut best_redirect: Option<&MatchCandidate> = None;
@@ -931,7 +934,11 @@ impl<'a> Matcher<'a> {
                     if flags.contains(RuleFlags::ELEMHIDE) || flags.contains(RuleFlags::GENERICHIDE) {
                         continue;
                     }
-                    if best_allow.map_or(true, |b| c.priority > b.priority) {
+                    if c.is_important {
+                        if best_important_allow.map_or(true, |b| c.priority > b.priority) {
+                            best_important_allow = Some(c);
+                        }
+                    } else if best_allow.map_or(true, |b| c.priority > b.priority) {
                         best_allow = Some(c);
                     }
                 }
@@ -944,7 +951,17 @@ impl<'a> Matcher<'a> {
             }
         }
 
-        // 1. IMPORTANT BLOCK wins (ignores exceptions)
+        // 1. IMPORTANT ALLOW beats everything (including important block)
+        if let Some(c) = best_important_allow {
+            return MatchResult {
+                decision: MatchDecision::Allow,
+                rule_id: c.rule_id as i32,
+                list_id: rules.list_id(c.rule_id),
+                redirect_url: None,
+            };
+        }
+
+        // 2. IMPORTANT BLOCK wins over regular exceptions
         if let Some(c) = best_important_block {
             let list_id = rules.list_id(c.rule_id);
 
