@@ -1,12 +1,12 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const SOURCE_FILE = path.resolve(__dirname, '../ultimate.txt');
-const OUTPUT_FILE = path.resolve(__dirname, 'hosts.json');
+const DEFAULT_INPUT = fileURLToPath(new URL('../ultimate.txt', import.meta.url));
+const OUTPUT_FILE = fileURLToPath(new URL('./hosts.json', import.meta.url));
 
 function extractDomain(line) {
   const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith('!') || trimmed.startsWith('[')) return null;
+  if (!trimmed || trimmed.startsWith('!') || trimmed.startsWith('[') || trimmed.startsWith('@@')) return null;
 
   if (trimmed.startsWith('||')) {
     const parts = trimmed.slice(2).split(/[\^/]/);
@@ -21,14 +21,21 @@ function extractDomain(line) {
 }
 
 try {
-  const content = fs.readFileSync(SOURCE_FILE, 'utf8');
-  const lines = content.split('\n');
+  const inputFiles = process.argv.slice(2);
+  const sources = inputFiles.length ? inputFiles : [DEFAULT_INPUT];
   const domains = new Set();
+  let totalLines = 0;
 
-  for (const line of lines) {
-    const domain = extractDomain(line);
-    if (domain && domain.includes('.') && !domain.includes('*')) {
-      domains.add(domain);
+  for (const source of sources) {
+    const content = fs.readFileSync(source, 'utf8');
+    const lines = content.split('\n');
+    totalLines += lines.length;
+
+    for (const line of lines) {
+      const domain = extractDomain(line);
+      if (domain && domain.includes('.') && !domain.includes('*')) {
+        domains.add(domain);
+      }
     }
   }
 
@@ -36,7 +43,8 @@ try {
   fs.writeFileSync(OUTPUT_FILE, JSON.stringify(uniqueDomains, null, 2));
 
   console.log(`Generated ${OUTPUT_FILE}`);
-  console.log(`Source lines: ${lines.length}`);
+  console.log(`Source files: ${sources.length}`);
+  console.log(`Source lines: ${totalLines}`);
   console.log(`Unique domains: ${uniqueDomains.length}`);
 } catch (err) {
   console.error(`Error: ${err.message}`);
