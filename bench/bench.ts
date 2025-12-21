@@ -1,12 +1,12 @@
 import { $ } from 'bun';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { generateTestRequests, generateRealisticMix, type TestRequest } from './test-urls';
 
 const WASM_PATH = './dist/wasm/bb_wasm.js';
-const DIST_DATA_DIR = './dist/data';
-const SNAPSHOT_PATH = `${DIST_DATA_DIR}/snapshot.ubx`;
-const FILTER_LIST_PATH = './testdata/test-filters.txt';
+const DEFAULT_SNAPSHOT_PATH = './dist/data/snapshot.ubx';
+const DEFAULT_FILTER_LIST_PATH = './testdata/test-filters.txt';
 
 interface WasmModule {
   init(data: Uint8Array): void;
@@ -34,18 +34,50 @@ interface BenchResult {
   opsPerSec: number;
 }
 
+interface BenchOptions {
+  inputPath: string;
+  snapshotPath: string;
+  compile: boolean;
+}
+
 function assertFileExists(path: string, hint: string): void {
   if (!existsSync(path)) {
     throw new Error(`${hint} not found at ${path}`);
   }
 }
 
-async function compileSnapshot(): Promise<void> {
-  assertFileExists(FILTER_LIST_PATH, 'Filter list');
-  await mkdir(DIST_DATA_DIR, { recursive: true });
+function parseArgs(argv: string[]): BenchOptions {
+  let inputPath = process.env.BENCH_INPUT || DEFAULT_FILTER_LIST_PATH;
+  let snapshotPath = process.env.BENCH_SNAPSHOT || DEFAULT_SNAPSHOT_PATH;
+  let compile = true;
+
+  const envNoCompile = process.env.BENCH_NO_COMPILE;
+  if (envNoCompile && envNoCompile !== '0' && envNoCompile !== 'false') {
+    compile = false;
+  }
+
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--no-compile') {
+      compile = false;
+    } else if (arg === '--input' && argv[i + 1]) {
+      inputPath = argv[i + 1]!;
+      i += 1;
+    } else if (arg === '--snapshot' && argv[i + 1]) {
+      snapshotPath = argv[i + 1]!;
+      i += 1;
+    }
+  }
+
+  return { inputPath, snapshotPath, compile };
+}
+
+async function compileSnapshot(inputPath: string, snapshotPath: string): Promise<void> {
+  assertFileExists(inputPath, 'Filter list');
+  await mkdir(dirname(snapshotPath), { recursive: true });
   
   console.log('Compiling filter list to snapshot...');
-  await $`cargo run --release --package bb-cli -- compile -i ${FILTER_LIST_PATH} -o ${SNAPSHOT_PATH} -v`.quiet();
+  await $`cargo run --release --package bb-cli -- compile -i ${inputPath} -o ${snapshotPath} -v`.quiet();
   console.log('Snapshot compiled.');
 }
 
@@ -64,9 +96,9 @@ async function loadWasm(): Promise<WasmModule> {
   return jsModule as unknown as WasmModule;
 }
 
-async function loadSnapshot(): Promise<Uint8Array> {
-  assertFileExists(SNAPSHOT_PATH, 'Snapshot file');
-  const file = Bun.file(SNAPSHOT_PATH);
+async function loadSnapshot(snapshotPath: string): Promise<Uint8Array> {
+  assertFileExists(snapshotPath, 'Snapshot file');
+  const file = Bun.file(snapshotPath);
   const buffer = await file.arrayBuffer();
   return new Uint8Array(buffer);
 }
@@ -137,14 +169,22 @@ async function main(): Promise<void> {
   console.log('='.repeat(60));
   console.log();
   
-  await compileSnapshot();
+  const options = parseArgs(process.argv);
+  console.log(`Input list: ${options.inputPath}`);
+  console.log(`Snapshot: ${options.snapshotPath}`);
+  console.log(`Compile: ${options.compile ? 'yes' : 'no'}`);
   console.log();
+
+  if (options.compile) {
+    await compileSnapshot(options.inputPath, options.snapshotPath);
+    console.log();
+  }
   
   console.log('Loading WASM module...');
   const wasm = await loadWasm();
   
   console.log('Loading snapshot...');
-  const snapshot = await loadSnapshot();
+  const snapshot = await loadSnapshot(options.snapshotPath);
   wasm.init(snapshot);
   
   const info = wasm.get_snapshot_info();
