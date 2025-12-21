@@ -20,8 +20,9 @@ pub fn build_snapshot(rules: &[CompiledRule]) -> Vec<u8> {
     
     let (pattern_pool, pattern_ids) = build_pattern_pool(rules, &mut str_pool);
     let (token_dict, token_postings) = build_token_sections(rules, &pattern_ids);
+    let redirect_offsets = build_redirect_offsets(rules, &mut str_pool);
     
-    let rules_section = build_rules_section(rules, &constraint_offsets, &pattern_ids);
+    let rules_section = build_rules_section(rules, &constraint_offsets, &pattern_ids, &redirect_offsets);
     let str_pool_section = str_pool.build();
 
     let mut sections = vec![
@@ -438,7 +439,23 @@ fn build_token_dict(entries: &[(u32, u32, u32)]) -> Vec<u8> {
     buf
 }
 
-fn build_rules_section(rules: &[CompiledRule], constraint_offsets: &[u32], pattern_ids: &[u32]) -> Vec<u8> {
+fn build_redirect_offsets(rules: &[CompiledRule], str_pool: &mut StringPool) -> Vec<u32> {
+    let mut offsets = Vec::with_capacity(rules.len());
+    for rule in rules {
+        match &rule.redirect {
+            Some(redirect_name) => {
+                let (offset, _len) = str_pool.intern(redirect_name);
+                offsets.push(offset);
+            }
+            None => {
+                offsets.push(0xFFFFFFFF);
+            }
+        }
+    }
+    offsets
+}
+
+fn build_rules_section(rules: &[CompiledRule], constraint_offsets: &[u32], pattern_ids: &[u32], redirect_offsets: &[u32]) -> Vec<u8> {
     let count = rules.len();
     let mut buf = Vec::new();
     buf.extend_from_slice(&(count as u32).to_le_bytes());
@@ -496,8 +513,8 @@ fn build_rules_section(rules: &[CompiledRule], constraint_offsets: &[u32], patte
     pos += count * 4;
     pad_to(&mut buf, pos);
 
-    for _ in rules {
-        buf.extend_from_slice(&0u32.to_le_bytes());
+    for offset in redirect_offsets {
+        buf.extend_from_slice(&offset.to_le_bytes());
     }
     pos += count * 4;
     pad_to(&mut buf, pos);
