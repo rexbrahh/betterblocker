@@ -60,14 +60,20 @@ jobs:
           echo "${{ secrets.CRX_PRIVATE_KEY_B64 }}" | base64 -d > crx.pem
           chmod 600 crx.pem
 
-      - name: Pack CRX
+      - name: Pack extension
         run: |
+          # Create ZIP for developer mode installation
+          cd dist && zip -r ../betterblocker.zip . && cd ..
+          ls -lah betterblocker.zip
+          
+          # Create CRX for enterprise policy installation
           bunx crx3 dist -k crx.pem -o dist.crx
           ls -lah dist.crx
 
       - name: Prepare Pages site
         run: |
           mkdir -p site/releases
+          cp betterblocker.zip site/releases/
           cp dist.crx site/releases/betterblocker.crx
 
           VERSION="${GITHUB_REF_NAME#v}"
@@ -81,20 +87,52 @@ jobs:
           </gupdate>
           EOF
 
-          cat > site/index.html <<EOF
+          cat > site/index.html <<'HTMLEOF'
           <!DOCTYPE html>
           <html>
-          <head><title>BetterBlocker</title></head>
+          <head>
+            <title>BetterBlocker</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+              h1 { color: #333; }
+              .download-btn { display: inline-block; background: #4285f4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; margin: 10px 0; }
+              .download-btn:hover { background: #3367d6; }
+              .instructions { background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0; }
+              code { background: #e0e0e0; padding: 2px 6px; border-radius: 3px; }
+              ol { line-height: 1.8; }
+            </style>
+          </head>
           <body>
             <h1>BetterBlocker</h1>
-            <p>Version: $VERSION</p>
+            <p>Ultra-fast content blocker with uBO-class feature coverage</p>
+          HTMLEOF
+
+          echo "  <p><strong>Version:</strong> $VERSION</p>" >> site/index.html
+
+          cat >> site/index.html <<'HTMLEOF'
+            
+            <a href="releases/betterblocker.zip" class="download-btn">Download ZIP</a>
+            
+            <div class="instructions">
+              <h3>Installation (Developer Mode)</h3>
+              <ol>
+                <li>Download the ZIP file above</li>
+                <li>Extract it to a folder on your computer</li>
+                <li>Open Chrome and go to <code>chrome://extensions</code></li>
+                <li>Enable <strong>Developer mode</strong> (toggle in top-right)</li>
+                <li>Click <strong>Load unpacked</strong></li>
+                <li>Select the extracted folder</li>
+              </ol>
+            </div>
+            
+            <h3>Other Downloads</h3>
             <ul>
-              <li><a href="update.xml">update.xml</a></li>
-              <li><a href="releases/betterblocker.crx">betterblocker.crx</a></li>
+              <li><a href="releases/betterblocker.crx">betterblocker.crx</a> (for enterprise policy installation)</li>
+              <li><a href="update.xml">update.xml</a> (for auto-update configuration)</li>
             </ul>
           </body>
           </html>
-          EOF
+          HTMLEOF
 
       - name: Shred private key
         if: always()
