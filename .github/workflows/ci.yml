@@ -71,9 +71,7 @@ jobs:
         run: npx playwright install chromium
 
       - name: Run e2e smoke tests
-        run: npx playwright test --project=chromium-extension
-        env:
-          DISPLAY: ':99'
+        run: xvfb-run --auto-servernum npx playwright test --project=chromium-extension
 
       - name: Upload unsigned extension artifact
         uses: actions/upload-artifact@v4
