@@ -130,7 +130,8 @@
       payload: { id: newList.id, url: newList.url }
     });
     if (response?.success === false) {
-      throw new Error(response.error || "Failed to compile list");
+      console.error("List compile failed", response.error);
+      alert(response.error || "Failed to compile list");
     }
   }
   async function updateAllLists() {

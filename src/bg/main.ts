@@ -50,9 +50,10 @@ let enabled = true;
 let snapshotStats: SnapshotStats | null = null;
 let initPromise: Promise<void> | null = null;
 
-async function loadWasm(): Promise<WasmExports> {
-  const wasmUrl = api.runtime.getURL('wasm/bb_wasm_bg.wasm');
-  const jsUrl = api.runtime.getURL('wasm/bb_wasm.js');
+async function loadWasm(cacheBust?: string): Promise<WasmExports> {
+  const cacheSuffix = cacheBust ? `?v=${cacheBust}` : '';
+  const wasmUrl = `${api.runtime.getURL('wasm/bb_wasm_bg.wasm')}${cacheSuffix}`;
+  const jsUrl = `${api.runtime.getURL('wasm/bb_wasm.js')}${cacheSuffix}`;
 
   const jsModule = await import(jsUrl);
   const wasmResponse = await fetch(wasmUrl);
@@ -88,6 +89,15 @@ async function loadSnapshot(): Promise<Uint8Array> {
     console.warn('[BetterBlocker] No bundled snapshot found, starting with empty ruleset');
     return new Uint8Array(0);
   }
+}
+
+async function swapMatcher(snapshot: Uint8Array | null): Promise<void> {
+  const cacheBust = Date.now().toString(36);
+  const nextWasm = await loadWasm(cacheBust);
+  if (snapshot && snapshot.length > 0) {
+    nextWasm.init(snapshot);
+  }
+  wasm = nextWasm;
 }
 
 async function initialize(): Promise<void> {
@@ -136,12 +146,7 @@ async function fetchListText(url: string): Promise<string> {
   return response.text();
 }
 
-function scheduleReload(reason: string): void {
-  console.log(`[BetterBlocker] Reloading extension: ${reason}`);
-  setTimeout(() => api.runtime.reload(), 250);
-}
-
-async function compileAndStoreLists(): Promise<SnapshotStats | null> {
+async function compileAndStoreLists(): Promise<{ stats: SnapshotStats | null; snapshot: Uint8Array | null }> {
   if (initPromise) {
     await initPromise;
   }
@@ -163,7 +168,7 @@ async function compileAndStoreLists(): Promise<SnapshotStats | null> {
         lastUpdated: list.lastUpdated,
       }))
     );
-    return null;
+    return { stats: null, snapshot: null };
   }
 
   const listTexts = await Promise.all(enabledLists.map((list) => fetchListText(list.url)));
@@ -205,7 +210,7 @@ async function compileAndStoreLists(): Promise<SnapshotStats | null> {
     sourceUrls: enabledLists.map((list) => list.url),
   });
 
-  return snapshotStats;
+  return { stats: snapshotStats, snapshot: snapshotBytes };
 }
 
 interface RequestDetails {
@@ -320,10 +325,9 @@ function setupMessageHandlers(): void {
         case 'updateAllLists':
         case 'listsChanged':
           compileAndStoreLists()
-            .then((stats) => {
+            .then(({ stats, snapshot }) => swapMatcher(snapshot).then(() => {
               sendResponse({ success: true, snapshotStats: stats });
-              scheduleReload('lists updated');
-            })
+            }))
             .catch((e: Error) => {
               console.error('[BetterBlocker] List update failed:', e);
               sendResponse({ success: false, error: e.message });
@@ -331,8 +335,14 @@ function setupMessageHandlers(): void {
           return true;
 
         case 'reloadSnapshot':
-          sendResponse({ success: true, reloading: true });
-          scheduleReload('manual reload');
+          loadSnapshot()
+            .then((snapshot) => swapMatcher(snapshot.length > 0 ? snapshot : null))
+            .then(() => {
+              sendResponse({ success: true });
+            })
+            .catch((e: Error) => {
+              sendResponse({ success: false, error: e.message });
+            });
           return true;
 
         default:
