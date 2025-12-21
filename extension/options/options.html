@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BetterBlocker Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="header-content">
+        <h1>BetterBlocker Settings</h1>
+        <p class="subtitle">Manage your filter lists and extension preferences</p>
+      </div>
+      <div class="header-actions">
+        <button id="update-all-btn" class="btn primary">
+          <span class="icon">↻</span> Update All Lists
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="card">
+        <div class="card-header">
+          <h2>Filter Lists</h2>
+          <span class="badge" id="list-count-badge">0 lists</span>
+        </div>
+        
+        <div class="card-body">
+          <div id="filter-list-container" class="filter-list">
+            <!-- Filter lists will be inserted here -->
+            <div class="empty-state">
+              <p>No filter lists configured.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-footer">
+          <h3>Add New List</h3>
+          <form id="add-list-form" class="add-list-form">
+            <div class="form-group">
+              <input type="text" id="new-list-name" placeholder="List Name (e.g., EasyList)" required>
+            </div>
+            <div class="form-group flex-grow">
+              <input type="url" id="new-list-url" placeholder="URL (e.g., https://...)" required>
+            </div>
+            <button type="submit" class="btn secondary">Add List</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card stats-section">
+        <div class="card-header">
+          <h2>Statistics & Info</h2>
+        </div>
+        <div class="card-body">
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-label">Total Rules Loaded</span>
+              <span class="stat-value" id="total-rules-count">-</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Extension Version</span>
+              <span class="stat-value" id="ext-version">-</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
