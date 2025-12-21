@@ -1,6 +1,8 @@
 /// <reference types="chrome"/>
 
-export function sendMessage<T>(message: { type: string; payload?: unknown }): Promise<T> {
+export type MessageBase = { type: string; payload?: unknown } & Record<string, unknown>;
+
+export function sendMessage<T = unknown, M extends MessageBase = MessageBase>(message: M): Promise<T> {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {
@@ -13,7 +15,7 @@ export function sendMessage<T>(message: { type: string; payload?: unknown }): Pr
   });
 }
 
-export function sendMessageStrict<T>(message: { type: string; payload?: unknown }): Promise<T> {
+export function sendMessageStrict<T = unknown, M extends MessageBase = MessageBase>(message: M): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {

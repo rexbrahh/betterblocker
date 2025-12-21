@@ -25,6 +25,24 @@ interface StatsResponse {
   snapshotStats?: SnapshotStats | null;
 }
 
+interface TraceStats {
+  enabled: boolean;
+  count: number;
+  max: number;
+}
+
+interface TraceResponse {
+  ok: boolean;
+  stats: TraceStats;
+  jsonl?: string;
+}
+
+type BgMessage = {
+  type: string;
+  payload?: unknown;
+  maxEntries?: number;
+};
+
 const STORAGE_KEY = 'filterLists';
 
 const pageElements = {
@@ -36,6 +54,13 @@ const pageElements = {
   updateAllBtn: document.getElementById('update-all-btn') as HTMLButtonElement,
   totalRules: document.getElementById('total-rules-count') as HTMLElement,
   extVersion: document.getElementById('ext-version') as HTMLElement,
+  traceStatusBadge: document.getElementById('trace-status-badge') as HTMLElement,
+  traceMaxEntries: document.getElementById('trace-max-entries') as HTMLInputElement,
+  traceStartBtn: document.getElementById('trace-start-btn') as HTMLButtonElement,
+  traceStopBtn: document.getElementById('trace-stop-btn') as HTMLButtonElement,
+  traceExportBtn: document.getElementById('trace-export-btn') as HTMLButtonElement,
+  traceCount: document.getElementById('trace-count') as HTMLElement,
+  traceMax: document.getElementById('trace-max') as HTMLElement,
 };
 
 function generateId(): string {
@@ -90,7 +115,7 @@ async function removeList(id: string) {
   await saveLists(updatedLists);
   renderLists(updatedLists);
   
-  await sendMessage({ type: 'listsChanged' });
+  await sendMessage<void, BgMessage>({ type: 'listsChanged' });
 }
 
 function renderLists(lists: FilterList[]) {
@@ -157,7 +182,7 @@ async function addList(name: string, url: string) {
   await saveLists(lists);
   renderLists(lists);
   
-  const response = await sendMessage<{ success?: boolean; error?: string }>({
+  const response: { success?: boolean; error?: string } = await sendMessage({
     type: 'updateList',
     payload: { id: newList.id, url: newList.url },
   });
@@ -175,7 +200,7 @@ async function updateAllLists() {
   btn.innerHTML = '<span class="icon">⌛</span> Updating...';
   
   try {
-    const response = await sendMessage<{ success?: boolean; error?: string }>({ type: 'updateAllLists' });
+    const response: { success?: boolean; error?: string } = await sendMessage({ type: 'updateAllLists' });
     if (response?.success === false) {
       throw new Error(response.error || 'Failed to compile lists');
     }
@@ -196,7 +221,7 @@ async function loadStats() {
   pageElements.extVersion.textContent = `v${manifest.version}`;
 
   try {
-    const stats = await sendMessage<StatsResponse>({ type: 'getStats' });
+    const stats: StatsResponse = await sendMessage({ type: 'getStats' });
     const ruleCount = stats?.snapshotStats?.rulesAfter;
     if (typeof ruleCount === 'number') {
       pageElements.totalRules.textContent = ruleCount.toLocaleString();
@@ -208,10 +233,100 @@ async function loadStats() {
   }
 }
 
+function updateTraceUI(stats: TraceStats) {
+  pageElements.traceStatusBadge.textContent = stats.enabled ? 'Recording' : 'Disabled';
+  pageElements.traceStatusBadge.style.backgroundColor = stats.enabled ? 'var(--success-color)' : '';
+  pageElements.traceStatusBadge.style.color = stats.enabled ? 'white' : '';
+  
+  pageElements.traceCount.textContent = stats.count.toLocaleString();
+  pageElements.traceMax.textContent = stats.max.toLocaleString();
+  
+  pageElements.traceStartBtn.disabled = stats.enabled;
+  pageElements.traceStopBtn.disabled = !stats.enabled;
+  pageElements.traceExportBtn.disabled = stats.count === 0;
+}
+
+async function getTraceStats() {
+  try {
+    const response: TraceResponse = await sendMessage({ type: 'trace.stats' });
+    if (response && response.stats) {
+      updateTraceUI(response.stats);
+    }
+  } catch (e) {
+    console.warn('Failed to get trace stats', e);
+  }
+}
+
+async function startTrace() {
+  const maxEntriesInput = pageElements.traceMaxEntries.value;
+  const parsedMaxEntries = maxEntriesInput ? parseInt(maxEntriesInput, 10) : undefined;
+  const message: BgMessage = { type: 'trace.start' };
+  if (typeof parsedMaxEntries === 'number' && Number.isFinite(parsedMaxEntries)) {
+    message.maxEntries = parsedMaxEntries;
+  }
+
+  try {
+    const response: TraceResponse = await sendMessage(message);
+    if (response && response.stats) {
+      updateTraceUI(response.stats);
+    }
+  } catch (e) {
+    console.error('Failed to start trace', e);
+  }
+}
+
+async function stopTrace() {
+  try {
+    const response: TraceResponse = await sendMessage({ type: 'trace.stop' });
+    if (response && response.stats) {
+      updateTraceUI(response.stats);
+    }
+  } catch (e) {
+    console.error('Failed to stop trace', e);
+  }
+}
+
+async function exportTrace() {
+  const btn = pageElements.traceExportBtn;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting...';
+
+  try {
+    const response: TraceResponse = await sendMessage({ type: 'trace.export' });
+    if (response && response.ok && response.jsonl) {
+      const blob = new Blob([response.jsonl], { type: 'application/x-jsonlines' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'trace.jsonl';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+    
+    if (response && response.stats) {
+        updateTraceUI(response.stats);
+    }
+  } catch (e) {
+    console.error('Failed to export trace', e);
+    alert('Failed to export trace');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText || 'Export JSONL';
+  }
+}
+
 async function init() {
   const lists = await getLists();
   renderLists(lists);
   loadStats();
+  getTraceStats();
+
+  pageElements.traceStartBtn.addEventListener('click', startTrace);
+  pageElements.traceStopBtn.addEventListener('click', stopTrace);
+  pageElements.traceExportBtn.addEventListener('click', exportTrace);
 
   pageElements.addForm.addEventListener('submit', async (e) => {
     e.preventDefault();

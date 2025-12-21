@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use bb_core::hash::{hash_domain, hash_token, Hash64};
+use bb_core::hash::{hash_domain, murmur3_32, Hash64};
 use bb_core::snapshot::{
     align_offset, header, section_entry, SectionId, HEADER_SIZE, SECTION_ENTRY_SIZE, UBX_MAGIC,
     UBX_VERSION, HASHMAP64_ENTRY_SIZE, HASHMAP64_HEADER_SIZE, NO_CONSTRAINT, NO_PATTERN,
@@ -17,12 +17,12 @@ pub fn build_snapshot(rules: &[CompiledRule]) -> Vec<u8> {
     let mut str_pool = StringPool::new();
     let domain_sets = build_domain_sets_section(rules);
     let (constraint_pool, constraint_offsets) = build_domain_constraint_pool(rules);
-    
+
     let (pattern_pool, pattern_ids) = build_pattern_pool(rules, &mut str_pool);
     let (token_dict, token_postings) = build_token_sections(rules, &pattern_ids);
-    let redirect_offsets = build_redirect_offsets(rules, &mut str_pool);
-    
-    let rules_section = build_rules_section(rules, &constraint_offsets, &pattern_ids, &redirect_offsets);
+    let (redirect_resources, redirect_option_ids) = build_redirect_resources_section(rules, &mut str_pool);
+
+    let rules_section = build_rules_section(rules, &constraint_offsets, &pattern_ids, &redirect_option_ids);
     let str_pool_section = str_pool.build();
 
     let mut sections = vec![
@@ -32,6 +32,7 @@ pub fn build_snapshot(rules: &[CompiledRule]) -> Vec<u8> {
         SectionData::new(SectionId::TokenPostings, token_postings),
         SectionData::new(SectionId::PatternPool, pattern_pool),
         SectionData::new(SectionId::DomainConstraintPool, constraint_pool),
+        SectionData::new(SectionId::RedirectResources, redirect_resources),
         SectionData::new(SectionId::Rules, rules_section),
     ];
 
@@ -117,8 +118,8 @@ impl StringPool {
 }
 
 fn build_domain_sets_section(rules: &[CompiledRule]) -> Vec<u8> {
-    let mut block_map: HashMap<Hash64, u32> = HashMap::new();
-    let mut allow_map: HashMap<Hash64, u32> = HashMap::new();
+    let mut block_map: HashMap<Hash64, Vec<u32>> = HashMap::new();
+    let mut allow_map: HashMap<Hash64, Vec<u32>> = HashMap::new();
 
     for (rule_id, rule) in rules.iter().enumerate() {
         if rule.pattern.is_some() {
@@ -136,23 +137,40 @@ fn build_domain_sets_section(rules: &[CompiledRule]) -> Vec<u8> {
             RuleAction::Allow => &mut allow_map,
             _ => continue,
         };
-        target.insert(hash, rule_id as u32);
+        target.entry(hash).or_default().push(rule_id as u32);
     }
 
-    let block_entries = map_to_entries(&block_map);
-    let allow_entries = map_to_entries(&allow_map);
+    let mut postings_data = Vec::new();
+    let block_entries = map_to_posting_entries(&block_map, &mut postings_data);
+    let allow_entries = map_to_posting_entries(&allow_map, &mut postings_data);
 
     let block_bytes = build_hashmap64(&block_entries);
     let allow_bytes = build_hashmap64(&allow_entries);
 
-    let mut section = Vec::with_capacity(block_bytes.len() + allow_bytes.len());
+    let mut section = Vec::with_capacity(block_bytes.len() + allow_bytes.len() + postings_data.len() + 4);
     section.extend_from_slice(&block_bytes);
     section.extend_from_slice(&allow_bytes);
+    section.extend_from_slice(&(postings_data.len() as u32).to_le_bytes());
+    section.extend_from_slice(&postings_data);
     section
 }
 
-fn map_to_entries(map: &HashMap<Hash64, u32>) -> Vec<(Hash64, u32)> {
-    map.iter().map(|(hash, value)| (*hash, *value)).collect()
+fn map_to_posting_entries(
+    map: &HashMap<Hash64, Vec<u32>>,
+    postings_data: &mut Vec<u8>,
+) -> Vec<(Hash64, u32)> {
+    map.iter()
+        .map(|(hash, rule_ids)| {
+            let offset = postings_data.len() as u32;
+            encode_domain_posting_list(postings_data, rule_ids);
+            (*hash, offset)
+        })
+        .collect()
+}
+
+fn encode_domain_posting_list(buf: &mut Vec<u8>, rule_ids: &[u32]) {
+    buf.extend_from_slice(&(rule_ids.len() as u32).to_le_bytes());
+    encode_posting_list(buf, rule_ids);
 }
 
 fn build_domain_constraint_pool(rules: &[CompiledRule]) -> (Vec<u8>, Vec<u32>) {
@@ -358,14 +376,13 @@ fn build_token_sections(rules: &[CompiledRule], pattern_ids: &[u32]) -> (Vec<u8>
 
 fn extract_pattern_tokens(pattern: &str) -> Vec<u32> {
     let mut tokens = Vec::new();
-    let pattern_lower = pattern.to_lowercase();
-    let bytes = pattern_lower.as_bytes();
-    
+    let bytes = pattern.as_bytes();
+
     let mut token_start = None;
-    
+
     for i in 0..=bytes.len() {
         let is_alnum = i < bytes.len() && bytes[i].is_ascii_alphanumeric();
-        
+
         if is_alnum {
             if token_start.is_none() {
                 token_start = Some(i);
@@ -373,13 +390,39 @@ fn extract_pattern_tokens(pattern: &str) -> Vec<u32> {
         } else if let Some(start) = token_start.take() {
             let len = i - start;
             if len >= 3 {
-                let token_str = &pattern_lower[start..i];
-                tokens.push(hash_token(token_str));
+                let token = &bytes[start..i];
+                tokens.push(hash_token_bytes_lower(token));
             }
         }
     }
-    
+
     tokens
+}
+
+fn hash_token_bytes_lower(token: &[u8]) -> u32 {
+    let mut stack_buf = [0u8; 64];
+    let bytes: &[u8] = if token.len() <= stack_buf.len() {
+        for (i, &b) in token.iter().enumerate() {
+            stack_buf[i] = b.to_ascii_lowercase();
+        }
+        &stack_buf[..token.len()]
+    } else {
+        let mut tmp = Vec::with_capacity(token.len());
+        for &b in token {
+            tmp.push(b.to_ascii_lowercase());
+        }
+        return hash_token_bytes(&tmp);
+    };
+
+    hash_token_bytes(bytes)
+}
+
+fn hash_token_bytes(bytes: &[u8]) -> u32 {
+    let mut h = murmur3_32(bytes, 0x811c9dc5);
+    if h == 0 {
+        h = 1;
+    }
+    h
 }
 
 fn encode_posting_list(buf: &mut Vec<u8>, rule_ids: &[u32]) {
@@ -439,23 +482,72 @@ fn build_token_dict(entries: &[(u32, u32, u32)]) -> Vec<u8> {
     buf
 }
 
-fn build_redirect_offsets(rules: &[CompiledRule], str_pool: &mut StringPool) -> Vec<u32> {
-    let mut offsets = Vec::with_capacity(rules.len());
+fn build_redirect_resources_section(
+    rules: &[CompiledRule],
+    str_pool: &mut StringPool,
+) -> (Vec<u8>, Vec<u32>) {
+    let mut option_ids = Vec::with_capacity(rules.len());
+    let mut resources = Vec::new();
+    let mut resource_index: HashMap<String, u32> = HashMap::new();
+
     for rule in rules {
-        match &rule.redirect {
-            Some(redirect_name) => {
-                let (offset, _len) = str_pool.intern(redirect_name);
-                offsets.push(offset);
-            }
-            None => {
-                offsets.push(0xFFFFFFFF);
-            }
+        if let Some(redirect_name) = &rule.redirect {
+            let index = if let Some(&existing) = resource_index.get(redirect_name) {
+                existing
+            } else {
+                let path = redirect_resource_path(redirect_name);
+                let (name_off, name_len) = str_pool.intern(redirect_name);
+                let (path_off, path_len) = str_pool.intern(&path);
+                let index = resources.len() as u32;
+                resources.push(RedirectResource {
+                    name_off,
+                    name_len: name_len as u32,
+                    path_off,
+                    path_len: path_len as u32,
+                });
+                resource_index.insert(redirect_name.clone(), index);
+                index
+            };
+            option_ids.push(index);
+        } else {
+            option_ids.push(0xFFFF_FFFF);
         }
     }
-    offsets
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&(resources.len() as u32).to_le_bytes());
+    for resource in &resources {
+        section.extend_from_slice(&resource.name_off.to_le_bytes());
+        section.extend_from_slice(&resource.name_len.to_le_bytes());
+        section.extend_from_slice(&resource.path_off.to_le_bytes());
+        section.extend_from_slice(&resource.path_len.to_le_bytes());
+        section.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    (section, option_ids)
 }
 
-fn build_rules_section(rules: &[CompiledRule], constraint_offsets: &[u32], pattern_ids: &[u32], redirect_offsets: &[u32]) -> Vec<u8> {
+struct RedirectResource {
+    name_off: u32,
+    name_len: u32,
+    path_off: u32,
+    path_len: u32,
+}
+
+fn redirect_resource_path(name: &str) -> String {
+    if name.starts_with('/') || name.starts_with("data:") || name.contains("://") {
+        return name.to_string();
+    }
+    if name == "noopjs" {
+        return "/redirects/noop.js".to_string();
+    }
+    if name.starts_with("redirects/") {
+        return format!("/{}", name);
+    }
+    format!("/redirects/{}", name)
+}
+
+fn build_rules_section(rules: &[CompiledRule], constraint_offsets: &[u32], pattern_ids: &[u32], option_ids: &[u32]) -> Vec<u8> {
     let count = rules.len();
     let mut buf = Vec::new();
     buf.extend_from_slice(&(count as u32).to_le_bytes());
@@ -513,7 +605,7 @@ fn build_rules_section(rules: &[CompiledRule], constraint_offsets: &[u32], patte
     pos += count * 4;
     pad_to(&mut buf, pos);
 
-    for offset in redirect_offsets {
+    for offset in option_ids {
         buf.extend_from_slice(&offset.to_le_bytes());
     }
     pos += count * 4;

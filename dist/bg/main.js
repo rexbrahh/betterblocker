@@ -72,12 +72,50 @@
     });
   }
 
+  // src/bg/trace.ts
+  var enabled = false;
+  var maxEntries = 50000;
+  var entries = [];
+  function traceConfigure(on, max = 50000) {
+    enabled = on;
+    maxEntries = Math.max(1000, Math.min(500000, Math.floor(max)));
+    if (!enabled) {
+      entries = [];
+    }
+  }
+  function traceMaybeRecord(details) {
+    if (!enabled)
+      return;
+    if (entries.length >= maxEntries)
+      return;
+    const url = String(details?.url || "");
+    if (!url)
+      return;
+    const initiator = typeof details?.initiator === "string" && details.initiator || typeof details?.documentUrl === "string" && details.documentUrl || typeof details?.originUrl === "string" && details.originUrl || undefined;
+    entries.push({
+      url,
+      type: String(details?.type || "other"),
+      initiator,
+      tabId: Number.isFinite(details?.tabId) ? details.tabId : -1,
+      frameId: Number.isFinite(details?.frameId) ? details.frameId : 0,
+      requestId: String(details?.requestId || "")
+    });
+  }
+  function traceExportJsonl() {
+    return entries.map((entry) => JSON.stringify(entry)).join(`
+`) + `
+`;
+  }
+  function traceStats() {
+    return { enabled, count: entries.length, max: maxEntries };
+  }
+
   // src/bg/main.ts
   var api = typeof browser !== "undefined" ? browser : chrome;
   var STORAGE_KEY = "filterLists";
   var wasm = null;
   var blockCount = 0;
-  var enabled = true;
+  var enabled2 = true;
   var snapshotStats = null;
   var initPromise = null;
   async function loadWasm(cacheBust) {
@@ -185,7 +223,7 @@
     const now = new Date().toISOString();
     const listStats = compileResult.listStats ?? [];
     const updatedLists = lists.map((list) => {
-      const idx = enabledLists.findIndex((enabled2) => enabled2.id === list.id);
+      const idx = enabledLists.findIndex((enabled3) => enabled3.id === list.id);
       if (idx === -1) {
         return { ...list, ruleCount: 0 };
       }
@@ -216,7 +254,8 @@
     return { stats: snapshotStats, snapshot: snapshotBytes };
   }
   function onBeforeRequest(details) {
-    if (!enabled || !wasm?.is_initialized()) {
+    traceMaybeRecord(details);
+    if (!enabled2 || !wasm?.is_initialized()) {
       return;
     }
     if (details.tabId < 0) {
@@ -262,18 +301,18 @@
         case "getStats":
           sendResponse({
             blockCount,
-            enabled,
+            enabled: enabled2,
             initialized: wasm?.is_initialized() ?? false,
             snapshotInfo: wasm?.get_snapshot_info() ?? null,
             snapshotStats
           });
           return true;
         case "toggleEnabled":
-          enabled = !enabled;
-          if (enabled) {
+          enabled2 = !enabled2;
+          if (enabled2) {
             api.browserAction.setIcon({ path: "icons/icon48.png" });
           }
-          sendResponse({ enabled });
+          sendResponse({ enabled: enabled2 });
           return true;
         case "updateList":
         case "updateAllLists":
@@ -291,6 +330,20 @@
           }).catch((e) => {
             sendResponse({ success: false, error: e.message });
           });
+          return true;
+        case "trace.start":
+          traceConfigure(true, message.maxEntries ?? 50000);
+          sendResponse({ ok: true, stats: traceStats() });
+          return true;
+        case "trace.stop":
+          traceConfigure(false);
+          sendResponse({ ok: true, stats: traceStats() });
+          return true;
+        case "trace.stats":
+          sendResponse({ ok: true, stats: traceStats() });
+          return true;
+        case "trace.export":
+          sendResponse({ ok: true, jsonl: traceExportJsonl(), stats: traceStats() });
           return true;
         default:
           return false;

@@ -50,6 +50,36 @@
         </div>
       </section>
 
+      <section class="card trace-section">
+        <div class="card-header">
+          <h2>Trace Recorder</h2>
+          <span class="badge" id="trace-status-badge">Disabled</span>
+        </div>
+        <div class="card-body">
+          <div class="trace-controls">
+            <div class="form-group">
+              <label for="trace-max-entries">Max Entries</label>
+              <input type="number" id="trace-max-entries" placeholder="Default: 50000">
+            </div>
+            <div class="button-group">
+              <button id="trace-start-btn" class="btn primary">Start Recording</button>
+              <button id="trace-stop-btn" class="btn secondary">Stop</button>
+              <button id="trace-export-btn" class="btn secondary">Export JSONL</button>
+            </div>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-label">Recorded Entries</span>
+              <span class="stat-value" id="trace-count">-</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Max Capacity</span>
+              <span class="stat-value" id="trace-max">-</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="card stats-section">
         <div class="card-header">
           <h2>Statistics & Info</h2>

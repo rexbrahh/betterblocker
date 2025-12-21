@@ -181,6 +181,27 @@ impl<'a> Snapshot<'a> {
             .unwrap_or_else(|| DomainHashSet::empty())
     }
 
+    pub fn domain_postings(&self) -> Option<&'a [u8]> {
+        let data = self.get_section(SectionId::DomainSets)?;
+        let block_capacity = read_u32_le(data, 0) as usize;
+        let block_size = HASHMAP64_HEADER_SIZE + block_capacity * HASHMAP64_ENTRY_SIZE;
+        if block_size + 4 > data.len() {
+            return None;
+        }
+
+        let allow_capacity = read_u32_le(data, block_size) as usize;
+        let allow_size = HASHMAP64_HEADER_SIZE + allow_capacity * HASHMAP64_ENTRY_SIZE;
+        let postings_offset = block_size + allow_size;
+        if postings_offset + 4 > data.len() {
+            return None;
+        }
+
+        let len = read_u32_le(data, postings_offset) as usize;
+        let start = postings_offset + 4;
+        let available = data.len().saturating_sub(start);
+        Some(&data[start..start + len.min(available)])
+    }
+
     /// Get token dictionary view.
     pub fn token_dict(&self) -> TokenDict<'a> {
         self.get_section(SectionId::TokenDict)
@@ -256,7 +277,6 @@ impl<'a> DomainHashSet<'a> {
         Self { data: &[], offset: 0, capacity: 0 }
     }
 
-    /// Look up a domain hash and return the rule ID, or None.
     pub fn lookup(&self, hash: Hash64) -> Option<u32> {
         if self.capacity == 0 {
             return None;
@@ -658,4 +678,12 @@ pub fn decode_posting_list(data: &[u8], offset: usize, count: usize) -> Vec<u32>
     }
 
     result
+}
+
+pub fn decode_posting_list_with_count(data: &[u8], offset: usize) -> Vec<u32> {
+    if offset + 4 > data.len() {
+        return Vec::new();
+    }
+    let count = read_u32_le(data, offset) as usize;
+    decode_posting_list(data, offset + 4, count)
 }

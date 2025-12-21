@@ -1,7 +1,6 @@
 use std::net::IpAddr;
 
 use bb_core::hash::{hash_domain, Hash64};
-use bb_core::psl::get_etld1;
 use bb_core::types::{PartyMask, RequestType, RuleAction, RuleFlags, SchemeMask};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +63,7 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
         let pattern_str = pattern_part.trim();
 
         if let Some(domain) = parse_host_anchor_rule(pattern_str) {
-            let (final_action, final_flags) = apply_redirect_action(action, options.flags, options.redirect.is_some());
+            let (final_action, final_flags, redirect) = finalize_rule(action, &options);
             rules.push(CompiledRule {
                 action: final_action,
                 flags: final_flags,
@@ -76,13 +75,13 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
                 party_mask: options.party_mask,
                 scheme_mask: options.scheme_mask,
                 domain_constraints: options.domain_constraints.clone(),
-                redirect: options.redirect.clone(),
+                redirect,
             });
             continue;
         }
 
         if let Some(domain) = parse_hosts_file_domain(pattern_str) {
-            let (final_action, final_flags) = apply_redirect_action(action, options.flags, options.redirect.is_some());
+            let (final_action, final_flags, redirect) = finalize_rule(action, &options);
             rules.push(CompiledRule {
                 action: final_action,
                 flags: final_flags,
@@ -94,13 +93,13 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
                 party_mask: options.party_mask,
                 scheme_mask: options.scheme_mask,
                 domain_constraints: options.domain_constraints.clone(),
-                redirect: options.redirect.clone(),
+                redirect,
             });
             continue;
         }
 
         if let Some(parsed) = parse_pattern_rule(pattern_str) {
-            let (final_action, final_flags) = apply_redirect_action(action, options.flags, options.redirect.is_some());
+            let (final_action, final_flags, redirect) = finalize_rule(action, &options);
             rules.push(CompiledRule {
                 action: final_action,
                 flags: final_flags,
@@ -112,7 +111,7 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
                 party_mask: options.party_mask,
                 scheme_mask: options.scheme_mask,
                 domain_constraints: options.domain_constraints,
-                redirect: options.redirect,
+                redirect,
             });
         }
     }
@@ -120,12 +119,22 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
     rules
 }
 
-fn apply_redirect_action(action: RuleAction, flags: RuleFlags, has_redirect: bool) -> (RuleAction, RuleFlags) {
-    if has_redirect && action == RuleAction::Block {
-        (RuleAction::RedirectDirective, flags | RuleFlags::FROM_REDIRECT_EQ)
-    } else {
-        (action, flags)
+fn finalize_rule(action: RuleAction, options: &ParsedOptions) -> (RuleAction, RuleFlags, Option<String>) {
+    let mut final_action = action;
+    let mut final_flags = options.flags;
+    let mut redirect = options.redirect.clone();
+
+    if redirect.is_some() {
+        if options.redirect_is_rule {
+            final_action = RuleAction::RedirectDirective;
+        } else if action == RuleAction::Allow {
+            redirect = None;
+        } else {
+            final_flags |= RuleFlags::FROM_REDIRECT_EQ;
+        }
     }
+
+    (final_action, final_flags, redirect)
 }
 
 #[derive(Clone)]
@@ -136,6 +145,7 @@ struct ParsedOptions {
     scheme_mask: SchemeMask,
     domain_constraints: Option<DomainConstraint>,
     redirect: Option<String>,
+    redirect_is_rule: bool,
 }
 
 impl Default for ParsedOptions {
@@ -147,6 +157,7 @@ impl Default for ParsedOptions {
             scheme_mask: SchemeMask::from_bits_truncate(0),
             domain_constraints: None,
             redirect: None,
+            redirect_is_rule: false,
         }
     }
 }
@@ -168,6 +179,7 @@ fn parse_options(text: &str) -> Option<ParsedOptions> {
     let mut scheme_exclude = 0u8;
     let mut domain_constraints: Option<DomainConstraint> = None;
     let mut redirect: Option<String> = None;
+    let mut redirect_is_rule = false;
 
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -202,6 +214,7 @@ fn parse_options(text: &str) -> Option<ParsedOptions> {
         if let Some(redirect_value) = raw_lower.strip_prefix("redirect=") {
             if !redirect_value.is_empty() {
                 redirect = Some(redirect_value.to_string());
+                redirect_is_rule = false;
             }
             continue;
         }
@@ -209,6 +222,7 @@ fn parse_options(text: &str) -> Option<ParsedOptions> {
         if let Some(redirect_value) = raw_lower.strip_prefix("redirect-rule=") {
             if !redirect_value.is_empty() {
                 redirect = Some(redirect_value.to_string());
+                redirect_is_rule = true;
             }
             continue;
         }
@@ -263,6 +277,7 @@ fn parse_options(text: &str) -> Option<ParsedOptions> {
         scheme_mask: SchemeMask::from_bits_truncate(scheme_bits),
         domain_constraints,
         redirect,
+        redirect_is_rule,
     })
 }
 
@@ -293,8 +308,7 @@ fn parse_domain_option(value: &str) -> Option<DomainConstraint> {
         };
 
         let domain = normalize_domain(domain_raw)?;
-        let etld1 = get_etld1(&domain);
-        let hash = hash_domain(&etld1);
+        let hash = hash_domain(&domain);
 
         if is_exclude {
             exclude.push(hash);

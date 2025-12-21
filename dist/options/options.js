@@ -23,7 +23,14 @@
     urlInput: document.getElementById("new-list-url"),
     updateAllBtn: document.getElementById("update-all-btn"),
     totalRules: document.getElementById("total-rules-count"),
-    extVersion: document.getElementById("ext-version")
+    extVersion: document.getElementById("ext-version"),
+    traceStatusBadge: document.getElementById("trace-status-badge"),
+    traceMaxEntries: document.getElementById("trace-max-entries"),
+    traceStartBtn: document.getElementById("trace-start-btn"),
+    traceStopBtn: document.getElementById("trace-stop-btn"),
+    traceExportBtn: document.getElementById("trace-export-btn"),
+    traceCount: document.getElementById("trace-count"),
+    traceMax: document.getElementById("trace-max")
   };
   function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substring(2);
@@ -169,10 +176,89 @@
       console.warn("Failed to load stats", e);
     }
   }
+  function updateTraceUI(stats) {
+    pageElements.traceStatusBadge.textContent = stats.enabled ? "Recording" : "Disabled";
+    pageElements.traceStatusBadge.style.backgroundColor = stats.enabled ? "var(--success-color)" : "";
+    pageElements.traceStatusBadge.style.color = stats.enabled ? "white" : "";
+    pageElements.traceCount.textContent = stats.count.toLocaleString();
+    pageElements.traceMax.textContent = stats.max.toLocaleString();
+    pageElements.traceStartBtn.disabled = stats.enabled;
+    pageElements.traceStopBtn.disabled = !stats.enabled;
+    pageElements.traceExportBtn.disabled = stats.count === 0;
+  }
+  async function getTraceStats() {
+    try {
+      const response = await sendMessage({ type: "trace.stats" });
+      if (response && response.stats) {
+        updateTraceUI(response.stats);
+      }
+    } catch (e) {
+      console.warn("Failed to get trace stats", e);
+    }
+  }
+  async function startTrace() {
+    const maxEntriesInput = pageElements.traceMaxEntries.value;
+    const parsedMaxEntries = maxEntriesInput ? parseInt(maxEntriesInput, 10) : undefined;
+    const message = { type: "trace.start" };
+    if (typeof parsedMaxEntries === "number" && Number.isFinite(parsedMaxEntries)) {
+      message.maxEntries = parsedMaxEntries;
+    }
+    try {
+      const response = await sendMessage(message);
+      if (response && response.stats) {
+        updateTraceUI(response.stats);
+      }
+    } catch (e) {
+      console.error("Failed to start trace", e);
+    }
+  }
+  async function stopTrace() {
+    try {
+      const response = await sendMessage({ type: "trace.stop" });
+      if (response && response.stats) {
+        updateTraceUI(response.stats);
+      }
+    } catch (e) {
+      console.error("Failed to stop trace", e);
+    }
+  }
+  async function exportTrace() {
+    const btn = pageElements.traceExportBtn;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Exporting...";
+    try {
+      const response = await sendMessage({ type: "trace.export" });
+      if (response && response.ok && response.jsonl) {
+        const blob = new Blob([response.jsonl], { type: "application/x-jsonlines" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "trace.jsonl";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+      if (response && response.stats) {
+        updateTraceUI(response.stats);
+      }
+    } catch (e) {
+      console.error("Failed to export trace", e);
+      alert("Failed to export trace");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText || "Export JSONL";
+    }
+  }
   async function init() {
     const lists = await getLists();
     renderLists(lists);
     loadStats();
+    getTraceStats();
+    pageElements.traceStartBtn.addEventListener("click", startTrace);
+    pageElements.traceStopBtn.addEventListener("click", stopTrace);
+    pageElements.traceExportBtn.addEventListener("click", exportTrace);
     pageElements.addForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const name = pageElements.nameInput.value.trim();

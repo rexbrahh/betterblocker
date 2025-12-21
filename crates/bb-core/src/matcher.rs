@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::hash::hash_domain;
 use crate::psl::walk_host_suffixes;
 use crate::snapshot::{
-    Snapshot, decode_posting_list, PatternOp, NO_PATTERN, NO_CONSTRAINT,
+    Snapshot, decode_posting_list, decode_posting_list_with_count, PatternOp, NO_PATTERN, NO_CONSTRAINT,
     read_u32_le, read_u16_le,
 };
 use crate::types::{
@@ -78,6 +78,9 @@ impl<'a> Matcher<'a> {
     fn match_domain_sets(&self, ctx: &RequestContext<'_>, candidates: &mut Vec<MatchCandidate>) {
         let allow_set = self.snapshot.domain_allow_set();
         let block_set = self.snapshot.domain_block_set();
+        let postings = self.snapshot.domain_postings();
+        let legacy_domain_sets = postings.is_none();
+        let postings_data = postings.unwrap_or(&[]);
         let rules = self.snapshot.rules();
 
         // Walk suffixes from most specific to least
@@ -85,29 +88,60 @@ impl<'a> Matcher<'a> {
             let hash = hash_domain(&suffix);
 
             // Check allow set
-            if let Some(rule_id) = allow_set.lookup(hash) {
-                let rule_id = rule_id as usize;
-                if self.check_rule_options(rule_id, ctx) && self.check_domain_constraints(rule_id, ctx) {
-                    candidates.push(MatchCandidate {
-                        rule_id,
-                        action: RuleAction::Allow,
-                        is_important: false,
-                        priority: 0,
-                    });
+            if let Some(value) = allow_set.lookup(hash) {
+                if legacy_domain_sets {
+                    let rule_id = value as usize;
+                    if self.check_rule_options(rule_id, ctx) && self.check_domain_constraints(rule_id, ctx) {
+                        candidates.push(MatchCandidate {
+                            rule_id,
+                            action: RuleAction::Allow,
+                            is_important: false,
+                            priority: 0,
+                        });
+                    }
+                } else {
+                    let rule_ids = decode_posting_list_with_count(postings_data, value as usize);
+                    for rule_id in rule_ids {
+                        let rule_id = rule_id as usize;
+                        if self.check_rule_options(rule_id, ctx) && self.check_domain_constraints(rule_id, ctx) {
+                            candidates.push(MatchCandidate {
+                                rule_id,
+                                action: RuleAction::Allow,
+                                is_important: false,
+                                priority: 0,
+                            });
+                        }
+                    }
                 }
             }
 
             // Check block set
-            if let Some(rule_id) = block_set.lookup(hash) {
-                let rule_id = rule_id as usize;
-                if self.check_rule_options(rule_id, ctx) && self.check_domain_constraints(rule_id, ctx) {
-                    let flags = RuleFlags::from_bits_truncate(rules.flags(rule_id));
-                    candidates.push(MatchCandidate {
-                        rule_id,
-                        action: RuleAction::Block,
-                        is_important: flags.contains(RuleFlags::IMPORTANT),
-                        priority: 0,
-                    });
+            if let Some(value) = block_set.lookup(hash) {
+                if legacy_domain_sets {
+                    let rule_id = value as usize;
+                    if self.check_rule_options(rule_id, ctx) && self.check_domain_constraints(rule_id, ctx) {
+                        let flags = RuleFlags::from_bits_truncate(rules.flags(rule_id));
+                        candidates.push(MatchCandidate {
+                            rule_id,
+                            action: RuleAction::Block,
+                            is_important: flags.contains(RuleFlags::IMPORTANT),
+                            priority: 0,
+                        });
+                    }
+                } else {
+                    let rule_ids = decode_posting_list_with_count(postings_data, value as usize);
+                    for rule_id in rule_ids {
+                        let rule_id = rule_id as usize;
+                        if self.check_rule_options(rule_id, ctx) && self.check_domain_constraints(rule_id, ctx) {
+                            let flags = RuleFlags::from_bits_truncate(rules.flags(rule_id));
+                            candidates.push(MatchCandidate {
+                                rule_id,
+                                action: RuleAction::Block,
+                                is_important: flags.contains(RuleFlags::IMPORTANT),
+                                priority: 0,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -222,56 +256,62 @@ impl<'a> Matcher<'a> {
     fn check_domain_constraints(&self, rule_id: usize, ctx: &RequestContext<'_>) -> bool {
         let rules = self.snapshot.rules();
         let constraint_off = rules.domain_constraint_offset(rule_id);
-        
+
         if constraint_off == NO_CONSTRAINT {
             return true;
         }
 
         let constraints = self.snapshot.domain_constraints();
-        if constraint_off as usize + 4 > constraints.len() {
+        let offset = constraint_off as usize;
+        if offset + 4 > constraints.len() {
             return true;
         }
 
-        let include_count = read_u16_le(constraints, constraint_off as usize) as usize;
-        let exclude_count = read_u16_le(constraints, constraint_off as usize + 2) as usize;
-
-        let site_hash = hash_domain(ctx.site_etld1);
-        let mut pos = constraint_off as usize + 4;
-
-        // Check include list
-        if include_count > 0 {
-            let mut found = false;
-            for _ in 0..include_count {
-                if pos + 8 > constraints.len() {
-                    break;
-                }
-                let lo = read_u32_le(constraints, pos);
-                let hi = read_u32_le(constraints, pos + 4);
-                pos += 8;
-
-                if lo == site_hash.lo && hi == site_hash.hi {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                return false;
-            }
-            // Skip remaining include entries
-            pos = constraint_off as usize + 4 + include_count * 8;
+        let include_count = read_u16_le(constraints, offset) as usize;
+        let exclude_count = read_u16_le(constraints, offset + 2) as usize;
+        let include_start = offset + 4;
+        let include_end = include_start + include_count * 8;
+        let exclude_end = include_end + exclude_count * 8;
+        if exclude_end > constraints.len() {
+            return true;
         }
 
-        // Check exclude list
-        for _ in 0..exclude_count {
-            if pos + 8 > constraints.len() {
-                break;
-            }
-            let lo = read_u32_le(constraints, pos);
-            let hi = read_u32_le(constraints, pos + 4);
-            pos += 8;
+        let include_slice = &constraints[include_start..include_end];
+        let exclude_slice = &constraints[include_end..exclude_end];
 
-            if lo == site_hash.lo && hi == site_hash.hi {
-                return false; // Excluded
+        let list_contains = |list: &[u8], lo: u32, hi: u32| -> bool {
+            let mut pos = 0;
+            while pos + 8 <= list.len() {
+                let entry_lo = read_u32_le(list, pos);
+                let entry_hi = read_u32_le(list, pos + 4);
+                if entry_lo == lo && entry_hi == hi {
+                    return true;
+                }
+                pos += 8;
+            }
+            false
+        };
+
+        if include_count > 0 {
+            let mut matched = false;
+            for suffix in walk_host_suffixes(ctx.site_host) {
+                let hash = hash_domain(&suffix);
+                if list_contains(include_slice, hash.lo, hash.hi) {
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                return false;
+            }
+        }
+
+        if exclude_count > 0 {
+            for suffix in walk_host_suffixes(ctx.site_host) {
+                let hash = hash_domain(&suffix);
+                if list_contains(exclude_slice, hash.lo, hash.hi) {
+                    return false;
+                }
             }
         }
 
@@ -285,8 +325,7 @@ impl<'a> Matcher<'a> {
         pattern: &crate::snapshot::PatternEntry,
         program: &[u8],
     ) -> bool {
-        let url_lower = url.to_lowercase();
-        let url_bytes = url_lower.as_bytes();
+        let url_bytes = url.as_bytes();
         let mut url_pos: usize = 0;
         let mut prog_pos: usize = 0;
 
@@ -307,11 +346,11 @@ impl<'a> Matcher<'a> {
                     prog_pos += 6;
 
                     let literal = match self.snapshot.get_string(str_off, str_len) {
-                        Some(s) => s.to_lowercase(),
+                        Some(s) => s,
                         None => return false,
                     };
 
-                    match url_lower[url_pos..].find(&literal) {
+                    match find_case_insensitive(&url_bytes[url_pos..], literal.as_bytes()) {
                         Some(pos) => url_pos += pos + literal.len(),
                         None => return false,
                     }
@@ -330,7 +369,7 @@ impl<'a> Matcher<'a> {
                 }
 
                 PatternOp::AssertBoundary => {
-                    if !is_at_boundary(&url_lower, url_pos) {
+                    if !is_at_boundary(url, url_pos) {
                         return false;
                     }
                 }
@@ -426,6 +465,15 @@ impl<'a> Matcher<'a> {
         if let Some(c) = best_important_block {
             let list_id = rules.list_id(c.rule_id);
 
+            if let Some(url) = self.get_redirect_url_by_option(rules.option_id(c.rule_id)) {
+                return MatchResult {
+                    decision: MatchDecision::Redirect,
+                    rule_id: c.rule_id as i32,
+                    list_id,
+                    redirect_url: Some(url),
+                };
+            }
+
             if let Some(redirect) = best_redirect {
                 if let Some(url) = self.get_redirect_url(redirect.rule_id) {
                     return MatchResult {
@@ -459,6 +507,15 @@ impl<'a> Matcher<'a> {
         // 3. Normal BLOCK (with possible redirect)
         if let Some(c) = best_block {
             let list_id = rules.list_id(c.rule_id);
+
+            if let Some(url) = self.get_redirect_url_by_option(rules.option_id(c.rule_id)) {
+                return MatchResult {
+                    decision: MatchDecision::Redirect,
+                    rule_id: c.rule_id as i32,
+                    list_id,
+                    redirect_url: Some(url),
+                };
+            }
 
             if let Some(redirect) = best_redirect {
                 if let Some(url) = self.get_redirect_url(redirect.rule_id) {
@@ -495,8 +552,10 @@ impl<'a> Matcher<'a> {
     /// Get the redirect URL for a redirect directive.
     fn get_redirect_url(&self, rule_id: usize) -> Option<String> {
         let rules = self.snapshot.rules();
-        let option_id = rules.option_id(rule_id);
-        
+        self.get_redirect_url_by_option(rules.option_id(rule_id))
+    }
+
+    fn get_redirect_url_by_option(&self, option_id: u32) -> Option<String> {
         if option_id == 0xFFFF_FFFF {
             return None;
         }
@@ -536,4 +595,21 @@ struct MatchCandidate {
     priority: i16,
 }
 
+fn find_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > haystack.len() {
+        return None;
+    }
+
+    let last = haystack.len() - needle.len();
+    for i in 0..=last {
+        if haystack[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+            return Some(i);
+        }
+    }
+
+    None
+}
 

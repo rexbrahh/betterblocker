@@ -7,6 +7,7 @@ import {
   saveStoredSnapshot,
   type SnapshotStats,
 } from './snapshot-store.js';
+import { traceConfigure, traceExportJsonl, traceMaybeRecord, traceStats } from './trace.js';
 
 declare const browser: typeof chrome | undefined;
 
@@ -227,6 +228,7 @@ interface RequestDetails {
 function onBeforeRequest(
   details: RequestDetails
 ): chrome.webRequest.BlockingResponse | undefined {
+  traceMaybeRecord(details);
   if (!enabled || !wasm?.is_initialized()) {
     return undefined;
   }
@@ -293,6 +295,7 @@ function setupWebRequest(): void {
 
 interface MessageRequest {
   type: string;
+  maxEntries?: number;
 }
 
 function setupMessageHandlers(): void {
@@ -343,6 +346,24 @@ function setupMessageHandlers(): void {
             .catch((e: Error) => {
               sendResponse({ success: false, error: e.message });
             });
+          return true;
+
+        case 'trace.start':
+          traceConfigure(true, message.maxEntries ?? 50_000);
+          sendResponse({ ok: true, stats: traceStats() });
+          return true;
+
+        case 'trace.stop':
+          traceConfigure(false);
+          sendResponse({ ok: true, stats: traceStats() });
+          return true;
+
+        case 'trace.stats':
+          sendResponse({ ok: true, stats: traceStats() });
+          return true;
+
+        case 'trace.export':
+          sendResponse({ ok: true, jsonl: traceExportJsonl(), stats: traceStats() });
           return true;
 
         default:

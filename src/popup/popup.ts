@@ -55,7 +55,7 @@ function updateStats(response: StatsResponse) {
 
 async function fetchStats() {
   try {
-    const response = await sendMessage<StatsResponse>({ type: 'getStats' });
+    const response: StatsResponse = await sendMessage({ type: 'getStats' });
     updateStats(response);
   } catch (error) {
     console.error('Failed to fetch stats:', error);
