@@ -12,6 +12,8 @@
     "<all_urls>"
   ],
 
+  "content_security_policy": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+
   "background": {
     "scripts": ["bg/main.js"],
     "persistent": true

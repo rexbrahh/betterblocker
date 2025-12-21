@@ -15,7 +15,7 @@
     const jsModule = await import(jsUrl);
     const wasmResponse = await fetch(wasmUrl);
     const wasmBytes = await wasmResponse.arrayBuffer();
-    await jsModule.default(wasmBytes);
+    await jsModule.default({ module_or_path: wasmBytes });
     return jsModule;
   }
   async function loadSnapshot() {
