@@ -6,14 +6,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_PATH = path.join(__dirname, '../dist');
 const EXTENSION_ID_PATTERN = /chrome-extension:\/\/([a-z]{32})/;
 
-export const test = base.extend<{
+type ExtensionFixtures = {
   context: BrowserContext;
   extensionId: string;
   backgroundPage: Page;
-}>({
-  // eslint-disable-next-line no-empty-pattern
+};
+
+export const test = base.extend<ExtensionFixtures>({
   context: async ({}, use) => {
-    const context = await chromium.launchPersistentContext('', {
+    const userDataDir = '';
+    const context = await chromium.launchPersistentContext(userDataDir, {
       headless: false,
       args: [
         `--disable-extensions-except=${EXTENSION_PATH}`,
@@ -23,14 +25,22 @@ export const test = base.extend<{
         '--disable-default-apps',
       ],
     });
+    
     await use(context);
-    await context.close();
+    
+    try {
+      await context.close();
+    } catch {
+    }
   },
 
   backgroundPage: async ({ context }, use) => {
-    let [bgPage] = context.backgroundPages();
-    if (!bgPage) {
-      bgPage = await context.waitForEvent('backgroundpage', { timeout: 10000 });
+    let bgPage: Page | undefined;
+    const pages = context.backgroundPages();
+    if (pages.length > 0) {
+      bgPage = pages[0];
+    } else {
+      bgPage = await context.waitForEvent('backgroundpage', { timeout: 15000 });
     }
     await use(bgPage);
   },

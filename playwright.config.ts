@@ -9,6 +9,7 @@ export default defineConfig({
   reporter: process.env.CI ? 'github' : 'list',
   timeout: 30000,
 
+
   use: {
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
