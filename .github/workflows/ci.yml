@@ -58,6 +58,9 @@ jobs:
       - name: Build extension
         run: bun run dist
 
+      - name: Check bundled lists compile
+        run: cargo run -p bb-cli --release -- check -i extension/data/oisd_big_abp.txt -i extension/data/ultimate.txt --min-parse-ratio 0.99
+
       - name: Upload unsigned extension artifact
         uses: actions/upload-artifact@v4
         with:
