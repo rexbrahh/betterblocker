@@ -1,13 +1,6 @@
 (() => {
-  // src/popup/popup.ts
-  var elements = {
-    blockCount: document.getElementById("block-count"),
-    statusDot: document.querySelector(".status-dot"),
-    statusText: document.querySelector(".status-text"),
-    statusBadge: document.getElementById("status-indicator"),
-    toggle: document.getElementById("enabled-toggle")
-  };
-  function sendMessage(message) {
+  // src/shared/messaging.ts
+  function sendMessageStrict(message) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
@@ -18,6 +11,15 @@
       });
     });
   }
+
+  // src/popup/popup.ts
+  var elements = {
+    blockCount: document.getElementById("block-count"),
+    statusDot: document.querySelector(".status-dot"),
+    statusText: document.querySelector(".status-text"),
+    statusBadge: document.getElementById("status-indicator"),
+    toggle: document.getElementById("enabled-toggle")
+  };
   function updateStatus(initialized, enabled) {
     if (!initialized) {
       elements.statusBadge.classList.remove("ready", "disabled", "error");
@@ -49,7 +51,7 @@
   }
   async function fetchStats() {
     try {
-      const response = await sendMessage({ type: "getStats" });
+      const response = await sendMessageStrict({ type: "getStats" });
       updateStats(response);
     } catch (error) {
       console.error("Failed to fetch stats:", error);
@@ -64,7 +66,7 @@
     const newState = target.checked;
     updateStatus(true, newState);
     try {
-      await sendMessage({ type: "toggleEnabled" });
+      await sendMessageStrict({ type: "toggleEnabled" });
       await fetchStats();
     } catch (error) {
       console.error("Failed to toggle:", error);

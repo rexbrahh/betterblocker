@@ -1,5 +1,7 @@
 /// <reference types="chrome"/>
 
+import { sendMessageStrict as sendMessage } from '../shared/messaging.js';
+
 interface StatsResponse {
   blockCount: number;
   enabled: boolean;
@@ -14,18 +16,6 @@ const elements = {
   statusBadge: document.getElementById('status-indicator') as HTMLElement,
   toggle: document.getElementById('enabled-toggle') as HTMLInputElement,
 };
-
-function sendMessage<T>(message: { type: string }): Promise<T> {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(chrome.runtime.lastError);
-      } else {
-        resolve(response);
-      }
-    });
-  });
-}
 
 function updateStatus(initialized: boolean, enabled: boolean) {
   if (!initialized) {
