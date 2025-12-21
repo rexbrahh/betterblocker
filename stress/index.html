@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BetterBlocker Stress Test</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      body {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        background: #0b0b0b;
+        color: #e6e6e6;
+      }
+
+      main {
+        max-width: 900px;
+        margin: 32px auto;
+        padding: 0 16px 32px;
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-size: 20px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .panel {
+        background: #141414;
+        border: 1px solid #2b2b2b;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        color: #a5a5a5;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      input[type="range"], select {
+        width: 100%;
+      }
+
+      .stat {
+        font-size: 20px;
+        font-weight: 700;
+        margin-top: 6px;
+      }
+
+      .row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      button {
+        padding: 10px 16px;
+        border: 1px solid #4a4a4a;
+        background: #1f1f1f;
+        color: #e6e6e6;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      button.primary {
+        background: #38bdf8;
+        border-color: #38bdf8;
+        color: #0a0a0a;
+      }
+
+      button.danger {
+        background: #ef4444;
+        border-color: #ef4444;
+        color: #0a0a0a;
+      }
+
+      #log {
+        height: 240px;
+        overflow: auto;
+        font-size: 12px;
+        background: #0f0f0f;
+        padding: 12px;
+        border: 1px solid #242424;
+      }
+
+      .log-line {
+        margin: 0 0 4px;
+      }
+
+      .muted {
+        color: #9a9a9a;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>BetterBlocker Stress Test</h1>
+
+      <section class="panel">
+        <div class="grid">
+          <div>
+            <label>Hosts loaded</label>
+            <div class="stat" id="hosts-count">0</div>
+          </div>
+          <div>
+            <label>Requests sent</label>
+            <div class="stat" id="stat-sent">0</div>
+          </div>
+          <div>
+            <label>Requests per second</label>
+            <div class="stat" id="stat-rps">0</div>
+          </div>
+          <div>
+            <label>Blocked or failed</label>
+            <div class="stat" id="stat-failed">0</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="grid">
+          <div>
+            <label>Concurrency</label>
+            <input id="concurrency" type="range" min="1" max="300" value="50" />
+            <div class="stat" id="concurrency-value">50</div>
+          </div>
+          <div>
+            <label>Request mode</label>
+            <select id="mode">
+              <option value="fetch-nocors">fetch no-cors</option>
+              <option value="fetch-cors">fetch cors</option>
+              <option value="image">image</option>
+            </select>
+          </div>
+          <div>
+            <label>Cache buster</label>
+            <select id="buster">
+              <option value="on">on</option>
+              <option value="off">off</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top: 16px;">
+          <button class="primary" id="start">Start</button>
+          <button class="danger" id="stop" disabled>Stop</button>
+          <span class="muted" id="status">idle</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div id="log"></div>
+      </section>
+    </main>
+
+    <script>
+      const state = {
+        hosts: [],
+        running: false,
+        sent: 0,
+        failed: 0,
+        startedAt: 0,
+        index: 0,
+        workers: 0,
+        tick: null,
+      };
+
+      const el = {
+        hostsCount: document.getElementById('hosts-count'),
+        sent: document.getElementById('stat-sent'),
+        rps: document.getElementById('stat-rps'),
+        failed: document.getElementById('stat-failed'),
+        concurrency: document.getElementById('concurrency'),
+        concurrencyValue: document.getElementById('concurrency-value'),
+        mode: document.getElementById('mode'),
+        buster: document.getElementById('buster'),
+        start: document.getElementById('start'),
+        stop: document.getElementById('stop'),
+        status: document.getElementById('status'),
+        log: document.getElementById('log'),
+      };
+
+      function log(message) {
+        const line = document.createElement('div');
+        line.className = 'log-line';
+        line.textContent = message;
+        el.log.prepend(line);
+        if (el.log.children.length > 80) {
+          el.log.removeChild(el.log.lastChild);
+        }
+      }
+
+      async function loadHosts() {
+        try {
+          const res = await fetch('hosts.json');
+          state.hosts = await res.json();
+          el.hostsCount.textContent = state.hosts.length.toLocaleString();
+          log(`Loaded ${state.hosts.length} hosts from hosts.json`);
+        } catch (err) {
+          log('Failed to load hosts.json. Run stress/generate-hosts.js first.');
+        }
+      }
+
+      function nextHost() {
+        if (state.hosts.length === 0) return null;
+        if (state.index >= state.hosts.length) state.index = 0;
+        return state.hosts[state.index++];
+      }
+
+      async function sendRequest(host) {
+        const cacheBuster = el.buster.value === 'on' ? `?_t=${Date.now()}` : '';
+        const url = `http://${host}/${cacheBuster}`;
+
+        try {
+          if (el.mode.value === 'image') {
+            await new Promise((resolve, reject) => {
+              const img = new Image();
+              img.onload = resolve;
+              img.onerror = reject;
+              img.src = url;
+            });
+          } else {
+            await fetch(url, {
+              mode: el.mode.value === 'fetch-nocors' ? 'no-cors' : 'cors',
+              cache: 'no-store',
+            });
+          }
+        } catch {
+          state.failed += 1;
+        }
+      }
+
+      async function workerLoop() {
+        while (state.running) {
+          const host = nextHost();
+          if (!host) {
+            await new Promise((r) => setTimeout(r, 100));
+            continue;
+          }
+          state.sent += 1;
+          if (state.sent % 25 === 0) {
+            updateStats();
+          }
+          await sendRequest(host);
+        }
+        state.workers -= 1;
+        if (state.workers === 0) {
+          stopUi();
+        }
+      }
+
+      function updateStats() {
+        el.sent.textContent = state.sent.toLocaleString();
+        el.failed.textContent = state.failed.toLocaleString();
+        const elapsed = (Date.now() - state.startedAt) / 1000;
+        const rps = elapsed > 0 ? Math.round(state.sent / elapsed) : 0;
+        el.rps.textContent = rps.toLocaleString();
+      }
+
+      function startUi() {
+        state.running = true;
+        state.sent = 0;
+        state.failed = 0;
+        state.startedAt = Date.now();
+        state.index = 0;
+        state.workers = 0;
+        el.status.textContent = 'running';
+        el.start.disabled = true;
+        el.stop.disabled = false;
+
+        const concurrency = Number(el.concurrency.value);
+        for (let i = 0; i < concurrency; i++) {
+          state.workers += 1;
+          workerLoop();
+        }
+
+        state.tick = setInterval(updateStats, 1000);
+      }
+
+      function stopUi() {
+        state.running = false;
+        el.status.textContent = 'idle';
+        el.start.disabled = false;
+        el.stop.disabled = true;
+        if (state.tick) {
+          clearInterval(state.tick);
+          state.tick = null;
+        }
+        updateStats();
+        log('Stopped.');
+      }
+
+      el.concurrency.addEventListener('input', () => {
+        el.concurrencyValue.textContent = el.concurrency.value;
+      });
+      el.start.addEventListener('click', startUi);
+      el.stop.addEventListener('click', stopUi);
+
+      loadHosts();
+    </script>
+  </body>
+</html>
