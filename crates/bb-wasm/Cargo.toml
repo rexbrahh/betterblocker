@@ -9,10 +9,12 @@ description = "WebAssembly bindings for BetterBlocker"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-bb-core = { path = "../bb-core" }
-wasm-bindgen.workspace = true
-js-sys.workspace = true
-web-sys.workspace = true
+ bb-core = { path = "../bb-core" }
+ bb-compiler = { path = "../bb-compiler" }
+ wasm-bindgen.workspace = true
+ js-sys.workspace = true
+ web-sys.workspace = true
+
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

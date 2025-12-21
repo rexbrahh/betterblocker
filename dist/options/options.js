@@ -125,7 +125,13 @@
     lists.push(newList);
     await saveLists(lists);
     renderLists(lists);
-    await sendMessage({ type: "updateList", payload: { id: newList.id, url: newList.url } });
+    const response = await sendMessage({
+      type: "updateList",
+      payload: { id: newList.id, url: newList.url }
+    });
+    if (response?.success === false) {
+      throw new Error(response.error || "Failed to compile list");
+    }
   }
   async function updateAllLists() {
     const btn = pageElements.updateAllBtn;
@@ -133,8 +139,10 @@
     btn.disabled = true;
     btn.innerHTML = '<span class="icon">⌛</span> Updating...';
     try {
-      await sendMessage({ type: "updateAllLists" });
-      await new Promise((r) => setTimeout(r, 2000));
+      const response = await sendMessage({ type: "updateAllLists" });
+      if (response?.success === false) {
+        throw new Error(response.error || "Failed to compile lists");
+      }
       const lists = await getLists();
       renderLists(lists);
     } catch (error) {
@@ -150,8 +158,9 @@
     pageElements.extVersion.textContent = `v${manifest.version}`;
     try {
       const stats = await sendMessage({ type: "getStats" });
-      if (stats && stats.snapshotInfo) {
-        pageElements.totalRules.textContent = stats.snapshotInfo.size.toLocaleString();
+      const ruleCount = stats?.snapshotStats?.rulesAfter;
+      if (typeof ruleCount === "number") {
+        pageElements.totalRules.textContent = ruleCount.toLocaleString();
       } else {
         pageElements.totalRules.textContent = "0";
       }

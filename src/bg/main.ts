@@ -1,10 +1,27 @@
 /// <reference types="chrome"/>
 
 import { MatchDecision } from '../shared/types.js';
+import {
+  clearStoredSnapshot,
+  loadStoredSnapshot,
+  saveStoredSnapshot,
+  type SnapshotStats,
+} from './snapshot-store.js';
 
 declare const browser: typeof chrome | undefined;
 
 const api = (typeof browser !== 'undefined' ? browser : chrome) as typeof chrome;
+
+const STORAGE_KEY = 'filterLists';
+
+interface FilterList {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  ruleCount: number;
+  lastUpdated: string | null;
+}
 
 interface WasmExports {
   init(data: Uint8Array): void;
@@ -19,11 +36,18 @@ interface WasmExports {
   ): { decision: number; ruleId: number; listId: number; redirectUrl?: string };
   should_block(url: string, requestType: string, initiator: string | undefined): boolean;
   get_snapshot_info(): { size: number; initialized: boolean };
+  compile_filter_lists(list_texts: string[]): {
+    snapshot: Uint8Array;
+    rulesBefore: number;
+    rulesAfter: number;
+    listStats: { lines: number; rulesBefore: number; rulesAfter: number }[];
+  };
 }
 
 let wasm: WasmExports | null = null;
 let blockCount = 0;
 let enabled = true;
+let snapshotStats: SnapshotStats | null = null;
 let initPromise: Promise<void> | null = null;
 
 async function loadWasm(): Promise<WasmExports> {
@@ -40,6 +64,17 @@ async function loadWasm(): Promise<WasmExports> {
 }
 
 async function loadSnapshot(): Promise<Uint8Array> {
+  try {
+    const stored = await loadStoredSnapshot();
+    if (stored && stored.data.byteLength > 0) {
+      snapshotStats = stored.stats;
+      return stored.data;
+    }
+  } catch (e) {
+    console.warn('[BetterBlocker] Failed to load stored snapshot:', e);
+  }
+
+  snapshotStats = null;
   const snapshotUrl = api.runtime.getURL('data/snapshot.ubx');
 
   try {
@@ -76,6 +111,101 @@ async function initialize(): Promise<void> {
     console.error('[BetterBlocker] Initialization failed:', e);
     throw e;
   }
+}
+
+async function getLists(): Promise<FilterList[]> {
+  return new Promise((resolve) => {
+    api.storage.sync.get([STORAGE_KEY], (result) => {
+      const lists = result[STORAGE_KEY] as FilterList[] | undefined;
+      resolve(lists ?? []);
+    });
+  });
+}
+
+async function saveLists(lists: FilterList[]): Promise<void> {
+  return new Promise((resolve) => {
+    api.storage.sync.set({ [STORAGE_KEY]: lists }, () => resolve());
+  });
+}
+
+async function fetchListText(url: string): Promise<string> {
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch list: ${response.status}`);
+  }
+  return response.text();
+}
+
+function scheduleReload(reason: string): void {
+  console.log(`[BetterBlocker] Reloading extension: ${reason}`);
+  setTimeout(() => api.runtime.reload(), 250);
+}
+
+async function compileAndStoreLists(): Promise<SnapshotStats | null> {
+  if (initPromise) {
+    await initPromise;
+  }
+
+  if (!wasm) {
+    throw new Error('WASM module not loaded');
+  }
+
+  const lists = await getLists();
+  const enabledLists = lists.filter((list) => list.enabled && list.url.trim().length > 0);
+
+  if (enabledLists.length === 0) {
+    await clearStoredSnapshot();
+    snapshotStats = null;
+    await saveLists(
+      lists.map((list) => ({
+        ...list,
+        ruleCount: 0,
+        lastUpdated: list.lastUpdated,
+      }))
+    );
+    return null;
+  }
+
+  const listTexts = await Promise.all(enabledLists.map((list) => fetchListText(list.url)));
+  const compileResult = wasm.compile_filter_lists(listTexts);
+  const now = new Date().toISOString();
+
+  const listStats = compileResult.listStats ?? [];
+  const updatedLists = lists.map((list) => {
+    const idx = enabledLists.findIndex((enabled) => enabled.id === list.id);
+    if (idx === -1) {
+      return { ...list, ruleCount: 0 };
+    }
+    const stats = listStats[idx];
+    return {
+      ...list,
+      ruleCount: stats ? stats.rulesAfter : 0,
+      lastUpdated: now,
+    };
+  });
+
+  await saveLists(updatedLists);
+
+  const snapshotBytes = compileResult.snapshot;
+
+  snapshotStats = {
+    rulesBefore: compileResult.rulesBefore,
+    rulesAfter: compileResult.rulesAfter,
+    listStats: listStats.map((stat) => ({
+      lines: stat.lines,
+      rulesBefore: stat.rulesBefore,
+      rulesAfter: stat.rulesAfter,
+    })),
+  };
+
+  await saveStoredSnapshot({
+    data: snapshotBytes,
+    stats: snapshotStats,
+    updatedAt: now,
+    sourceUrls: enabledLists.map((list) => list.url),
+  });
+
+  return snapshotStats;
 }
 
 interface RequestDetails {
@@ -174,6 +304,7 @@ function setupMessageHandlers(): void {
             enabled,
             initialized: wasm?.is_initialized() ?? false,
             snapshotInfo: wasm?.get_snapshot_info() ?? null,
+            snapshotStats,
           });
           return true;
 
@@ -185,19 +316,23 @@ function setupMessageHandlers(): void {
           sendResponse({ enabled });
           return true;
 
-        case 'reloadSnapshot':
-          loadSnapshot()
-            .then((data) => {
-              if (data.length > 0 && wasm) {
-                wasm.init(data);
-                sendResponse({ success: true });
-              } else {
-                sendResponse({ success: false, error: 'No snapshot data' });
-              }
+        case 'updateList':
+        case 'updateAllLists':
+        case 'listsChanged':
+          compileAndStoreLists()
+            .then((stats) => {
+              sendResponse({ success: true, snapshotStats: stats });
+              scheduleReload('lists updated');
             })
             .catch((e: Error) => {
+              console.error('[BetterBlocker] List update failed:', e);
               sendResponse({ success: false, error: e.message });
             });
+          return true;
+
+        case 'reloadSnapshot':
+          sendResponse({ success: true, reloading: true });
+          scheduleReload('manual reload');
           return true;
 
         default:

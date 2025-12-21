@@ -2,6 +2,7 @@
 
 use std::sync::OnceLock;
 use wasm_bindgen::prelude::*;
+use bb_compiler::{build_snapshot, optimize_rules, parse_filter_list};
 use bb_core::{
     Matcher,
     Snapshot,
@@ -56,6 +57,69 @@ pub fn get_snapshot_info() -> JsValue {
         let _ = js_sys::Reflect::set(&result, &"initialized".into(), &JsValue::from(false));
     }
     result.into()
+}
+
+#[wasm_bindgen]
+pub fn compile_filter_lists(list_texts: JsValue) -> Result<JsValue, JsValue> {
+    let list_array = js_sys::Array::from(&list_texts);
+    let list_count = list_array.length() as usize;
+
+    if list_count == 0 {
+        return Err(JsValue::from_str("No list texts provided"));
+    }
+
+    let mut all_rules = Vec::new();
+    let mut line_counts: Vec<usize> = Vec::with_capacity(list_count);
+    let mut rules_before_per_list: Vec<usize> = Vec::with_capacity(list_count);
+
+    for (idx, value) in list_array.iter().enumerate() {
+        let text = value
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("List text must be a string"))?;
+
+        line_counts.push(text.lines().count());
+
+        let mut rules = parse_filter_list(&text);
+        for rule in &mut rules {
+            rule.list_id = idx as u16;
+        }
+
+        rules_before_per_list.push(rules.len());
+        all_rules.extend(rules);
+    }
+
+    let rules_before_total = all_rules.len();
+    optimize_rules(&mut all_rules);
+    let rules_after_total = all_rules.len();
+
+    let mut rules_after_per_list = vec![0usize; list_count];
+    for rule in &all_rules {
+        let list_id = rule.list_id as usize;
+        if list_id < list_count {
+            rules_after_per_list[list_id] += 1;
+        }
+    }
+
+    let snapshot = build_snapshot(&all_rules);
+    let js_result = js_sys::Object::new();
+    let snapshot_array = js_sys::Uint8Array::from(snapshot.as_slice());
+
+    let _ = js_sys::Reflect::set(&js_result, &"snapshot".into(), &snapshot_array);
+    let _ = js_sys::Reflect::set(&js_result, &"rulesBefore".into(), &JsValue::from(rules_before_total as u32));
+    let _ = js_sys::Reflect::set(&js_result, &"rulesAfter".into(), &JsValue::from(rules_after_total as u32));
+
+    let list_stats = js_sys::Array::new_with_length(list_count as u32);
+    for i in 0..list_count {
+        let stat = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&stat, &"lines".into(), &JsValue::from(line_counts[i] as u32));
+        let _ = js_sys::Reflect::set(&stat, &"rulesBefore".into(), &JsValue::from(rules_before_per_list[i] as u32));
+        let _ = js_sys::Reflect::set(&stat, &"rulesAfter".into(), &JsValue::from(rules_after_per_list[i] as u32));
+        list_stats.set(i as u32, stat.into());
+    }
+
+    let _ = js_sys::Reflect::set(&js_result, &"listStats".into(), &list_stats);
+
+    Ok(js_result.into())
 }
 
 #[wasm_bindgen]

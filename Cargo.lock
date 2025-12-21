@@ -124,6 +124,7 @@ dependencies = [
 name = "bb-wasm"
 version = "0.1.0"
 dependencies = [
+ "bb-compiler",
  "bb-core",
  "js-sys",
  "wasm-bindgen",

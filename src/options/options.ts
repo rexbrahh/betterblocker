@@ -11,11 +11,18 @@ interface FilterList {
   lastUpdated: string | null;
 }
 
+interface SnapshotStats {
+  rulesBefore: number;
+  rulesAfter: number;
+  listStats: { lines: number; rulesBefore: number; rulesAfter: number }[];
+}
+
 interface StatsResponse {
   blockCount: number;
   enabled: boolean;
   initialized: boolean;
   snapshotInfo: { size: number; initialized: boolean } | null;
+  snapshotStats?: SnapshotStats | null;
 }
 
 const STORAGE_KEY = 'filterLists';
@@ -150,7 +157,14 @@ async function addList(name: string, url: string) {
   await saveLists(lists);
   renderLists(lists);
   
-  await sendMessage({ type: 'updateList', payload: { id: newList.id, url: newList.url } });
+  const response = await sendMessage<{ success?: boolean; error?: string }>({
+    type: 'updateList',
+    payload: { id: newList.id, url: newList.url },
+  });
+  if (response?.success === false) {
+    console.error('List compile failed', response.error);
+    alert(response.error || 'Failed to compile list');
+  }
 }
 
 async function updateAllLists() {
@@ -161,11 +175,11 @@ async function updateAllLists() {
   btn.innerHTML = '<span class="icon">⌛</span> Updating...';
   
   try {
-    await sendMessage({ type: 'updateAllLists' });
-    
-    // Simulate delay for UX
-    await new Promise(r => setTimeout(r, 2000));
-    
+    const response = await sendMessage<{ success?: boolean; error?: string }>({ type: 'updateAllLists' });
+    if (response?.success === false) {
+      throw new Error(response.error || 'Failed to compile lists');
+    }
+
     const lists = await getLists();
     renderLists(lists);
   } catch (error) {
@@ -183,10 +197,11 @@ async function loadStats() {
 
   try {
     const stats = await sendMessage<StatsResponse>({ type: 'getStats' });
-    if (stats && stats.snapshotInfo) {
-      pageElements.totalRules.textContent = stats.snapshotInfo.size.toLocaleString();
+    const ruleCount = stats?.snapshotStats?.rulesAfter;
+    if (typeof ruleCount === 'number') {
+      pageElements.totalRules.textContent = ruleCount.toLocaleString();
     } else {
-        pageElements.totalRules.textContent = '0';
+      pageElements.totalRules.textContent = '0';
     }
   } catch (e) {
     console.warn('Failed to load stats', e);
