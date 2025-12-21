@@ -22,6 +22,7 @@ pub struct CompiledRule {
     pub party_mask: PartyMask,
     pub scheme_mask: SchemeMask,
     pub domain_constraints: Option<DomainConstraint>,
+    pub redirect: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
