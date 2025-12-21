@@ -13,6 +13,7 @@
     "build:wasm": "cd crates/bb-wasm && wasm-pack build --target web --out-dir ../../extension/wasm",
     "watch": "bun run build:dev --watch",
     "dist": "bun run build && cp -r extension/* dist/ && mkdir -p dist/data",
+    "bench": "bun run bench/bench.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",
     "compile": "cargo run --package bb-cli -- compile",
