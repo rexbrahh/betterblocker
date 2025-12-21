@@ -28,8 +28,16 @@
   var currentTabId;
   var currentUrl;
   async function getCurrentTab() {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    return tabs[0];
+    return new Promise((resolve) => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (chrome.runtime.lastError) {
+          console.warn("Failed to query active tab:", chrome.runtime.lastError);
+          resolve(undefined);
+          return;
+        }
+        resolve(tabs?.[0]);
+      });
+    });
   }
   function updateStatus(initialized, enabled) {
     if (!initialized) {
@@ -103,6 +111,8 @@
       } else {
         elements.siteSection.style.display = "none";
       }
+    } else {
+      elements.siteSection.style.display = "none";
     }
     fetchStats();
     setInterval(fetchStats, 2000);

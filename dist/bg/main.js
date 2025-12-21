@@ -496,6 +496,7 @@
   var blockCount = 0;
   var snapshotStats = null;
   var initPromise = null;
+  var autoCompileInFlight = null;
   async function loadWasm(cacheBust) {
     const cacheSuffix = cacheBust ? `?v=${cacheBust}` : "";
     const wasmUrl = `${api.runtime.getURL("wasm/bb_wasm_bg.wasm")}${cacheSuffix}`;
@@ -584,9 +585,11 @@
       const seeded = await ensureDefaultLists();
       if (seeded) {
         setTimeout(() => {
-          compileAndStoreLists().catch((e) => {
-            console.error("[BetterBlocker] Default list compile failed:", e);
-          });
+          maybeAutoCompile("seeded");
+        }, 0);
+      } else if (!wasm?.is_initialized()) {
+        setTimeout(() => {
+          maybeAutoCompile("startup");
         }, 0);
       }
       setupUpdateSchedule();
@@ -617,6 +620,29 @@
     }
     await saveLists(DEFAULT_LISTS);
     return true;
+  }
+  async function maybeAutoCompile(reason) {
+    if (autoCompileInFlight) {
+      return autoCompileInFlight;
+    }
+    if (!wasm || wasm.is_initialized()) {
+      return;
+    }
+    const lists = await getLists();
+    const enabledLists = lists.filter((list) => list.enabled && list.url.trim().length > 0);
+    if (enabledLists.length === 0) {
+      console.warn(`[BetterBlocker] Auto-compile skipped (${reason}): no enabled lists`);
+      return;
+    }
+    console.warn(`[BetterBlocker] Auto-compile triggered (${reason})`);
+    autoCompileInFlight = compileAndStoreLists().then(() => {
+      console.log("[BetterBlocker] Auto-compile finished");
+    }).catch((e) => {
+      console.error("[BetterBlocker] Auto-compile failed:", e);
+    }).finally(() => {
+      autoCompileInFlight = null;
+    });
+    return autoCompileInFlight;
   }
   function setupUpdateSchedule() {
     if (!api.alarms) {
@@ -889,11 +915,21 @@
         case "getStats": {
           const tabId = typeof message.tabId === "number" ? message.tabId : sender.tab?.id ?? -1;
           const siteUrl = typeof message.url === "string" ? message.url : sender.tab?.url ?? topFrameByTab.get(tabId);
+          const initialized = wasm?.is_initialized() ?? false;
+          if (!initialized) {
+            maybeAutoCompile("getStats");
+          }
+          let snapshotInfo = null;
+          try {
+            snapshotInfo = wasm?.get_snapshot_info() ?? null;
+          } catch (e) {
+            console.warn("[BetterBlocker] Snapshot info error:", e);
+          }
           sendResponse({
             blockCount,
             enabled: settings.enabled,
-            initialized: wasm?.is_initialized() ?? false,
-            snapshotInfo: wasm?.get_snapshot_info() ?? null,
+            initialized,
+            snapshotInfo,
             snapshotStats,
             tabBlockCount: getTabBlockCount(tabId),
             siteDisabled: isSiteDisabled(siteUrl)

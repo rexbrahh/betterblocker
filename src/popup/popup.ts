@@ -28,8 +28,16 @@ let currentTabId: number | undefined;
 let currentUrl: string | undefined;
 
 async function getCurrentTab() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs[0];
+  return new Promise<chrome.tabs.Tab | undefined>((resolve) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (chrome.runtime.lastError) {
+        console.warn('Failed to query active tab:', chrome.runtime.lastError);
+        resolve(undefined);
+        return;
+      }
+      resolve(tabs?.[0]);
+    });
+  });
 }
 
 function updateStatus(initialized: boolean, enabled: boolean) {
@@ -99,7 +107,7 @@ async function init() {
   if (tab) {
     currentTabId = tab.id;
     currentUrl = tab.url;
-    
+
     if (tab.url) {
       try {
         const urlObj = new URL(tab.url);
@@ -115,6 +123,8 @@ async function init() {
     } else {
       elements.siteSection.style.display = 'none';
     }
+  } else {
+    elements.siteSection.style.display = 'none';
   }
 
   fetchStats();
