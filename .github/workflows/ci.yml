@@ -61,6 +61,9 @@ jobs:
       - name: Check bundled lists compile
         run: cargo run -p bb-cli --release -- check -i extension/data/oisd_big_abp.txt -i extension/data/ultimate.txt --min-parse-ratio 0.99
 
+      - name: Compile snapshot for perf-budget
+        run: cargo run -p bb-cli --release -- compile -i dist/data/oisd_big_abp.txt -i dist/data/ultimate.txt -o dist/data/snapshot.ubx
+
       - name: Check performance budgets
         run: bun run perf-budget
 
