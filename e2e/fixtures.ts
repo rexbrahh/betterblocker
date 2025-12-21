@@ -1,6 +1,8 @@
 import { test as base, chromium, type BrowserContext, type Page } from '@playwright/test';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_PATH = path.join(__dirname, '../dist');
 const EXTENSION_ID_PATTERN = /chrome-extension:\/\/([a-z]{32})/;
 
