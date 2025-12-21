@@ -62,11 +62,8 @@ jobs:
 
       - name: Pack CRX
         run: |
-          sudo apt-get update
-          sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
-          CHROME_BIN=$(command -v chromium || command -v chromium-browser)
-          "$CHROME_BIN" --pack-extension="$(pwd)/dist" --pack-extension-key="$(pwd)/crx.pem"
-          ls -lah
+          bunx crx3 dist -k crx.pem -o dist.crx
+          ls -lah dist.crx
 
       - name: Prepare Pages site
         run: |
