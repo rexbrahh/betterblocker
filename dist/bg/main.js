@@ -181,34 +181,36 @@
   var STORAGE_KEY = "filterLists";
   var DYNAMIC_RULES_KEY = "dynamicRules";
   var SETTINGS_KEY = "settings";
+  var DEFAULT_LIST_URL = "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/ultimate.mini.txt";
   var DEFAULT_LISTS = [
     {
       id: "oisd-big-bundled",
-      name: "OISD Big (bundled)",
-      url: api.runtime.getURL("data/oisd_big_abp.txt"),
+      name: "HaGeZi Ultimate Mini (bundled)",
+      url: DEFAULT_LIST_URL,
       enabled: true,
       ruleCount: 0,
       lastUpdated: null,
       pinned: true,
-      version: "202512210305",
-      homepage: "https://oisd.nl",
-      license: "https://github.com/sjhgvr/oisd/blob/main/LICENSE",
+      version: "latest",
+      homepage: "https://github.com/hagezi/dns-blocklists",
+      license: "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE",
       source: "bundled"
     },
     {
       id: "hagezi-ultimate-bundled",
-      name: "HaGeZi's Ultimate (bundled)",
-      url: api.runtime.getURL("data/ultimate.txt"),
+      name: "HaGeZi Ultimate Mini (bundled mirror)",
+      url: DEFAULT_LIST_URL,
       enabled: true,
       ruleCount: 0,
       lastUpdated: null,
       pinned: true,
-      version: "2025.1220.1821.33",
+      version: "latest",
       homepage: "https://github.com/hagezi/dns-blocklists",
       license: "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE",
       source: "bundled"
     }
   ];
+  var DEFAULT_LIST_BY_ID = new Map(DEFAULT_LISTS.map((list) => [list.id, list]));
   var UPDATE_ALARM_NAME = "listUpdate";
   var UPDATE_INTERVAL_MINUTES = 24 * 60;
   var LIST_FETCH_TIMEOUT_MS = 30000;
@@ -436,7 +438,7 @@
   }
   function matchDynamicRules(details, initiator) {
     if (!settings.dynamicFilteringEnabled || dynamicRules.length === 0) {
-      return { action: 0 /* NOOP */, rule: void 0 };
+      return { action: 0 /* NOOP */, rule: undefined };
     }
     const reqHost = extractHost(details.url);
     const siteUrl = initiator ?? details.url;
@@ -596,10 +598,14 @@
       }
       await loadDynamicRules();
       await loadSettings();
+      const migrated = await migrateBundledLists();
       const seeded = await ensureDefaultLists();
-      if (seeded) {
+      const lists = await getLists();
+      const needsCompile = seeded || migrated || shouldAutoCompileOnStartup(lists);
+      if (needsCompile) {
+        const reason = seeded ? "seeded" : migrated ? "migrated" : "startup";
         setTimeout(() => {
-          maybeAutoCompile("seeded");
+          maybeAutoCompile(reason, { force: true });
         }, 0);
       } else if (!wasm?.is_initialized()) {
         setTimeout(() => {
@@ -627,6 +633,34 @@
       api.storage.sync.set({ [STORAGE_KEY]: lists }, () => resolve());
     });
   }
+  function shouldAutoCompileOnStartup(lists) {
+    return lists.some((list) => list.enabled && (list.ruleCount === 0 || !list.lastUpdated));
+  }
+  async function migrateBundledLists() {
+    const lists = await getLists();
+    if (lists.length === 0) {
+      return false;
+    }
+    let changed = false;
+    const next = lists.map((list) => {
+      const replacement = DEFAULT_LIST_BY_ID.get(list.id);
+      if (!replacement) {
+        return list;
+      }
+      changed = true;
+      return {
+        ...list,
+        ...replacement,
+        enabled: list.enabled,
+        ruleCount: 0,
+        lastUpdated: null
+      };
+    });
+    if (changed) {
+      await saveLists(next);
+    }
+    return changed;
+  }
   async function ensureDefaultLists() {
     const lists = await getLists();
     if (lists.length > 0) {
@@ -635,11 +669,11 @@
     await saveLists(DEFAULT_LISTS);
     return true;
   }
-  async function maybeAutoCompile(reason) {
+  async function maybeAutoCompile(reason, options = {}) {
     if (autoCompileInFlight) {
       return autoCompileInFlight;
     }
-    if (!wasm || wasm.is_initialized()) {
+    if (!wasm || !options.force && wasm.is_initialized()) {
       return;
     }
     const lists = await getLists();
@@ -751,7 +785,18 @@
       })));
       return { stats: null, snapshot: null };
     }
-    const listTexts = await Promise.all(enabledLists.map((list) => fetchListText(list.url)));
+    const listTextCache = new Map();
+    const listTexts = await Promise.all(
+      enabledLists.map((list) => {
+        const url = list.url.trim();
+        let cached = listTextCache.get(url);
+        if (!cached) {
+          cached = fetchListText(url);
+          listTextCache.set(url, cached);
+        }
+        return cached;
+      })
+    );
     const compileResult = wasm.compile_filter_lists(listTexts);
     const now = new Date().toISOString();
     const listStats = compileResult.listStats ?? [];

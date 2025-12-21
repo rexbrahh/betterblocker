@@ -1,17 +1,25 @@
 (() => {
   // src/shared/messaging.ts
-  function sendMessage(message) {
-    return new Promise((resolve) => {
+  function sendMessage(message, options = {}) {
+    const { retries = 0, retryDelayMs = 250 } = options;
+    const attempt = (remaining) => new Promise((resolve) => {
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
           const errorMessage = chrome.runtime.lastError.message ?? String(chrome.runtime.lastError);
           console.warn("Message error:", message.type, errorMessage);
+          if (remaining > 0) {
+            setTimeout(() => {
+              attempt(remaining - 1).then(resolve);
+            }, retryDelayMs);
+            return;
+          }
           resolve({});
-        } else {
-          resolve(response);
+          return;
         }
+        resolve(response);
       });
     });
+    return attempt(retries);
   }
 
   // src/cs/scriptlets.ts
@@ -418,10 +426,13 @@
       global.__bbScriptlets = scriptlets;
     }
     try {
-      const response = await sendMessage({
-        type: "cosmetic.get",
-        url: window.location.href
-      });
+      const response = await sendMessage(
+        {
+          type: "cosmetic.get",
+          url: window.location.href
+        },
+        { retries: 2, retryDelayMs: 250 }
+      );
       if (!response) {
         return;
       }

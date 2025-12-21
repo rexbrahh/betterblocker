@@ -31,34 +31,37 @@ const api = (typeof browser !== 'undefined' ? browser : chrome) as typeof chrome
 const STORAGE_KEY = 'filterLists';
 const DYNAMIC_RULES_KEY = 'dynamicRules';
 const SETTINGS_KEY = 'settings';
+const DEFAULT_LIST_URL =
+  'https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/ultimate.mini.txt';
 const DEFAULT_LISTS: FilterList[] = [
   {
     id: 'oisd-big-bundled',
-    name: 'OISD Big (bundled)',
-    url: api.runtime.getURL('data/oisd_big_abp.txt'),
+    name: 'HaGeZi Ultimate Mini (bundled)',
+    url: DEFAULT_LIST_URL,
     enabled: true,
     ruleCount: 0,
     lastUpdated: null,
     pinned: true,
-    version: '202512210305',
-    homepage: 'https://oisd.nl',
-    license: 'https://github.com/sjhgvr/oisd/blob/main/LICENSE',
+    version: 'latest',
+    homepage: 'https://github.com/hagezi/dns-blocklists',
+    license: 'https://github.com/hagezi/dns-blocklists/blob/main/LICENSE',
     source: 'bundled',
   },
   {
     id: 'hagezi-ultimate-bundled',
-    name: "HaGeZi's Ultimate (bundled)",
-    url: api.runtime.getURL('data/ultimate.txt'),
+    name: 'HaGeZi Ultimate Mini (bundled mirror)',
+    url: DEFAULT_LIST_URL,
     enabled: true,
     ruleCount: 0,
     lastUpdated: null,
     pinned: true,
-    version: '2025.1220.1821.33',
+    version: 'latest',
     homepage: 'https://github.com/hagezi/dns-blocklists',
     license: 'https://github.com/hagezi/dns-blocklists/blob/main/LICENSE',
     source: 'bundled',
   },
 ];
+const DEFAULT_LIST_BY_ID = new Map(DEFAULT_LISTS.map((list) => [list.id, list]));
 const UPDATE_ALARM_NAME = 'listUpdate';
 const UPDATE_INTERVAL_MINUTES = 24 * 60;
 const LIST_FETCH_TIMEOUT_MS = 30_000;
@@ -566,10 +569,14 @@ async function initialize(): Promise<void> {
 
     await loadDynamicRules();
     await loadSettings();
+    const migrated = await migrateBundledLists();
     const seeded = await ensureDefaultLists();
-    if (seeded) {
+    const lists = await getLists();
+    const needsCompile = seeded || migrated || shouldAutoCompileOnStartup(lists);
+    if (needsCompile) {
+      const reason = seeded ? 'seeded' : migrated ? 'migrated' : 'startup';
       setTimeout(() => {
-        void maybeAutoCompile('seeded');
+        void maybeAutoCompile(reason, { force: true });
       }, 0);
     } else if (!wasm?.is_initialized()) {
       setTimeout(() => {
@@ -601,6 +608,36 @@ async function saveLists(lists: FilterList[]): Promise<void> {
   });
 }
 
+function shouldAutoCompileOnStartup(lists: FilterList[]): boolean {
+  return lists.some((list) => list.enabled && (list.ruleCount === 0 || !list.lastUpdated));
+}
+
+async function migrateBundledLists(): Promise<boolean> {
+  const lists = await getLists();
+  if (lists.length === 0) {
+    return false;
+  }
+  let changed = false;
+  const next = lists.map((list) => {
+    const replacement = DEFAULT_LIST_BY_ID.get(list.id);
+    if (!replacement) {
+      return list;
+    }
+    changed = true;
+    return {
+      ...list,
+      ...replacement,
+      enabled: list.enabled,
+      ruleCount: 0,
+      lastUpdated: null,
+    };
+  });
+  if (changed) {
+    await saveLists(next);
+  }
+  return changed;
+}
+
 async function ensureDefaultLists(): Promise<boolean> {
   const lists = await getLists();
   if (lists.length > 0) {
@@ -610,11 +647,14 @@ async function ensureDefaultLists(): Promise<boolean> {
   return true;
 }
 
-async function maybeAutoCompile(reason: string): Promise<void> {
+async function maybeAutoCompile(
+  reason: string,
+  options: { force?: boolean } = {}
+): Promise<void> {
   if (autoCompileInFlight) {
     return autoCompileInFlight;
   }
-  if (!wasm || wasm.is_initialized()) {
+  if (!wasm || (!options.force && wasm.is_initialized())) {
     return;
   }
   const lists = await getLists();
@@ -750,7 +790,18 @@ async function compileAndStoreLists(): Promise<{ stats: SnapshotStats | null; sn
     return { stats: null, snapshot: null };
   }
 
-  const listTexts = await Promise.all(enabledLists.map((list) => fetchListText(list.url)));
+  const listTextCache = new Map<string, Promise<string>>();
+  const listTexts = await Promise.all(
+    enabledLists.map((list) => {
+      const url = list.url.trim();
+      let cached = listTextCache.get(url);
+      if (!cached) {
+        cached = fetchListText(url);
+        listTextCache.set(url, cached);
+      }
+      return cached;
+    })
+  );
   const compileResult = wasm.compile_filter_lists(listTexts);
   const now = new Date().toISOString();
 

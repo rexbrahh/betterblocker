@@ -293,10 +293,13 @@ function applyProceduralRules(rules: string[]): void {
   }
 
   try {
-    const response = await sendMessage<CosmeticPayload>({
-      type: 'cosmetic.get',
-      url: window.location.href,
-    });
+    const response = await sendMessage<CosmeticPayload>(
+      {
+        type: 'cosmetic.get',
+        url: window.location.href,
+      },
+      { retries: 2, retryDelayMs: 250 }
+    );
 
     if (!response) {
       return;
