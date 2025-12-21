@@ -51,6 +51,10 @@ export const enum RuleFlags {
   HAS_HOST_ANCHOR = 1 << 8,
   /** Rule has left anchor (starts with |) */
   HAS_LEFT_ANCHOR = 1 << 9,
+  CSP_EXCEPTION = 1 << 10,
+  REDIRECT_RULE_EXCEPTION = 1 << 11,
+  ELEMHIDE = 1 << 12,
+  GENERICHIDE = 1 << 13,
 }
 
 // =============================================================================
@@ -337,6 +341,28 @@ export interface DynamicRule {
   /** Action */
   action: DynamicAction;
 }
+
+export interface UserSettings {
+  enabled: boolean;
+  cosmeticsEnabled: boolean;
+  scriptletsEnabled: boolean;
+  dynamicFilteringEnabled: boolean;
+  removeparamEnabled: boolean;
+  cspEnabled: boolean;
+  responseHeaderEnabled: boolean;
+  disabledSites: string[];
+}
+
+export const DEFAULT_SETTINGS: UserSettings = {
+  enabled: true,
+  cosmeticsEnabled: true,
+  scriptletsEnabled: true,
+  dynamicFilteringEnabled: true,
+  removeparamEnabled: true,
+  cspEnabled: true,
+  responseHeaderEnabled: true,
+  disabledSites: [],
+};
 
 // =============================================================================
 // WebRequest details interface (browser-agnostic subset)

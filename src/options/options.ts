@@ -43,6 +43,17 @@ type BgMessage = {
   maxEntries?: number;
 };
 
+interface UserSettings {
+  enabled: boolean;
+  cosmeticsEnabled: boolean;
+  scriptletsEnabled: boolean;
+  dynamicFilteringEnabled: boolean;
+  removeparamEnabled: boolean;
+  cspEnabled: boolean;
+  responseHeaderEnabled: boolean;
+  disabledSites: string[];
+}
+
 const STORAGE_KEY = 'filterLists';
 
 const pageElements = {
@@ -61,6 +72,14 @@ const pageElements = {
   traceExportBtn: document.getElementById('trace-export-btn') as HTMLButtonElement,
   traceCount: document.getElementById('trace-count') as HTMLElement,
   traceMax: document.getElementById('trace-max') as HTMLElement,
+  toggles: {
+    cosmeticsEnabled: document.getElementById('toggle-cosmeticsEnabled') as HTMLInputElement,
+    scriptletsEnabled: document.getElementById('toggle-scriptletsEnabled') as HTMLInputElement,
+    dynamicFilteringEnabled: document.getElementById('toggle-dynamicFilteringEnabled') as HTMLInputElement,
+    removeparamEnabled: document.getElementById('toggle-removeparamEnabled') as HTMLInputElement,
+    cspEnabled: document.getElementById('toggle-cspEnabled') as HTMLInputElement,
+    responseHeaderEnabled: document.getElementById('toggle-responseHeaderEnabled') as HTMLInputElement,
+  }
 };
 
 function generateId(): string {
@@ -318,15 +337,54 @@ async function exportTrace() {
   }
 }
 
+async function loadSettings() {
+  try {
+    const response: { settings?: UserSettings } = await sendMessage({ type: 'settings.get' });
+    const settings = response?.settings;
+    if (!settings) return;
+
+    for (const [key, element] of Object.entries(pageElements.toggles)) {
+      if (key in settings) {
+        const value = (settings as unknown as Record<string, unknown>)[key];
+        element.checked = Boolean(value);
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load settings', e);
+  }
+}
+
+async function updateSetting(key: string, value: boolean) {
+  try {
+    await sendMessage({
+      type: 'settings.update',
+      settings: { [key]: value },
+    });
+  } catch (e) {
+    console.error('Failed to update setting', e);
+    if (key in pageElements.toggles) {
+      const el = pageElements.toggles[key as keyof typeof pageElements.toggles];
+      el.checked = !value;
+    }
+  }
+}
+
 async function init() {
   const lists = await getLists();
   renderLists(lists);
   loadStats();
   getTraceStats();
+  loadSettings();
 
   pageElements.traceStartBtn.addEventListener('click', startTrace);
   pageElements.traceStopBtn.addEventListener('click', stopTrace);
   pageElements.traceExportBtn.addEventListener('click', exportTrace);
+
+  for (const [key, element] of Object.entries(pageElements.toggles)) {
+    element.addEventListener('change', (e) => {
+      updateSetting(key, (e.target as HTMLInputElement).checked);
+    });
+  }
 
   pageElements.addForm.addEventListener('submit', async (e) => {
     e.preventDefault();

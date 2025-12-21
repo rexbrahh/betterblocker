@@ -12,6 +12,7 @@ use crate::parser::{AnchorType, CompiledRule};
 
 const HASH_SEED_LO: u32 = 0x9e3779b9;
 const HASH_SEED_HI: u32 = 0x85ebca6b;
+const NO_OPTION_ID: u32 = 0xFFFF_FFFF;
 
 pub fn build_snapshot(rules: &[CompiledRule]) -> Vec<u8> {
     let mut str_pool = StringPool::new();
@@ -21,8 +22,23 @@ pub fn build_snapshot(rules: &[CompiledRule]) -> Vec<u8> {
     let (pattern_pool, pattern_ids) = build_pattern_pool(rules, &mut str_pool);
     let (token_dict, token_postings) = build_token_sections(rules, &pattern_ids);
     let (redirect_resources, redirect_option_ids) = build_redirect_resources_section(rules, &mut str_pool);
+    let (removeparam_specs, removeparam_option_ids) =
+        build_removeparam_specs_section(rules, &mut str_pool);
+    let (csp_specs, csp_option_ids) = build_csp_specs_section(rules, &mut str_pool);
+    let (header_specs, header_option_ids) = build_header_specs_section(rules, &mut str_pool);
+    let responseheader_rules = build_responseheader_rules_section(rules, &constraint_offsets, &mut str_pool);
+    let cosmetic_rules = build_cosmetic_rules_section(rules, &constraint_offsets, &mut str_pool);
+    let scriptlet_rules = build_scriptlet_rules_section(rules, &constraint_offsets, &mut str_pool);
+    let procedural_rules = build_empty_list_section();
+    let option_ids = build_option_ids(
+        rules,
+        &redirect_option_ids,
+        &removeparam_option_ids,
+        &csp_option_ids,
+        &header_option_ids,
+    );
 
-    let rules_section = build_rules_section(rules, &constraint_offsets, &pattern_ids, &redirect_option_ids);
+    let rules_section = build_rules_section(rules, &constraint_offsets, &pattern_ids, &option_ids);
     let str_pool_section = str_pool.build();
 
     let mut sections = vec![
@@ -33,6 +49,13 @@ pub fn build_snapshot(rules: &[CompiledRule]) -> Vec<u8> {
         SectionData::new(SectionId::PatternPool, pattern_pool),
         SectionData::new(SectionId::DomainConstraintPool, constraint_pool),
         SectionData::new(SectionId::RedirectResources, redirect_resources),
+        SectionData::new(SectionId::RemoveparamSpecs, removeparam_specs),
+        SectionData::new(SectionId::CspSpecs, csp_specs),
+        SectionData::new(SectionId::HeaderSpecs, header_specs),
+        SectionData::new(SectionId::ResponseHeaderRules, responseheader_rules),
+        SectionData::new(SectionId::CosmeticRules, cosmetic_rules),
+        SectionData::new(SectionId::ProceduralRules, procedural_rules),
+        SectionData::new(SectionId::ScriptletRules, scriptlet_rules),
         SectionData::new(SectionId::Rules, rules_section),
     ];
 
@@ -510,7 +533,7 @@ fn build_redirect_resources_section(
             };
             option_ids.push(index);
         } else {
-            option_ids.push(0xFFFF_FFFF);
+            option_ids.push(NO_OPTION_ID);
         }
     }
 
@@ -545,6 +568,297 @@ fn redirect_resource_path(name: &str) -> String {
         return format!("/{}", name);
     }
     format!("/redirects/{}", name)
+}
+
+fn build_removeparam_specs_section(
+    rules: &[CompiledRule],
+    str_pool: &mut StringPool,
+) -> (Vec<u8>, Vec<u32>) {
+    let mut option_ids = Vec::with_capacity(rules.len());
+    let mut specs = Vec::new();
+    let mut spec_index: HashMap<String, u32> = HashMap::new();
+
+    for rule in rules {
+        if let Some(param) = &rule.removeparam {
+            let index = if let Some(&existing) = spec_index.get(param) {
+                existing
+            } else {
+                let (param_off, param_len) = str_pool.intern(param);
+                let index = specs.len() as u32;
+                specs.push(RemoveparamSpec {
+                    param_off,
+                    param_len: param_len as u32,
+                });
+                spec_index.insert(param.clone(), index);
+                index
+            };
+            option_ids.push(index);
+        } else {
+            option_ids.push(NO_OPTION_ID);
+        }
+    }
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&(specs.len() as u32).to_le_bytes());
+    for spec in &specs {
+        section.extend_from_slice(&spec.param_off.to_le_bytes());
+        section.extend_from_slice(&spec.param_len.to_le_bytes());
+        section.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    (section, option_ids)
+}
+
+fn build_csp_specs_section(
+    rules: &[CompiledRule],
+    str_pool: &mut StringPool,
+) -> (Vec<u8>, Vec<u32>) {
+    let mut option_ids = Vec::with_capacity(rules.len());
+    let mut specs = Vec::new();
+    let mut spec_index: HashMap<String, u32> = HashMap::new();
+
+    for rule in rules {
+        if let Some(csp) = &rule.csp {
+            let index = if let Some(&existing) = spec_index.get(csp) {
+                existing
+            } else {
+                let (spec_off, spec_len) = str_pool.intern(csp);
+                let index = specs.len() as u32;
+                specs.push(CspSpec {
+                    spec_off,
+                    spec_len: spec_len as u32,
+                });
+                spec_index.insert(csp.clone(), index);
+                index
+            };
+            option_ids.push(index);
+        } else {
+            option_ids.push(NO_OPTION_ID);
+        }
+    }
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&(specs.len() as u32).to_le_bytes());
+    for spec in &specs {
+        section.extend_from_slice(&spec.spec_off.to_le_bytes());
+        section.extend_from_slice(&spec.spec_len.to_le_bytes());
+        section.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    (section, option_ids)
+}
+
+fn build_header_specs_section(
+    rules: &[CompiledRule],
+    str_pool: &mut StringPool,
+) -> (Vec<u8>, Vec<u32>) {
+    let mut option_ids = Vec::with_capacity(rules.len());
+    let mut specs = Vec::new();
+    let mut spec_index: HashMap<crate::parser::HeaderSpec, u32> = HashMap::new();
+
+    for rule in rules {
+        if let Some(spec) = &rule.header {
+            let index = if let Some(&existing) = spec_index.get(spec) {
+                existing
+            } else {
+                let (name_off, name_len) = str_pool.intern(&spec.name);
+                let (value_off, value_len) = match &spec.value {
+                    Some(value) => {
+                        let (off, len) = str_pool.intern(value);
+                        (off, len as u32)
+                    }
+                    None => (0, 0),
+                };
+                let index = specs.len() as u32;
+                specs.push(HeaderSpecEntry {
+                    name_off,
+                    name_len: name_len as u32,
+                    value_off,
+                    value_len,
+                    flags: if spec.negate { 1 } else { 0 },
+                });
+                spec_index.insert(spec.clone(), index);
+                index
+            };
+            option_ids.push(index);
+        } else {
+            option_ids.push(NO_OPTION_ID);
+        }
+    }
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&(specs.len() as u32).to_le_bytes());
+    for spec in &specs {
+        section.extend_from_slice(&spec.name_off.to_le_bytes());
+        section.extend_from_slice(&spec.name_len.to_le_bytes());
+        section.extend_from_slice(&spec.value_off.to_le_bytes());
+        section.extend_from_slice(&spec.value_len.to_le_bytes());
+        section.extend_from_slice(&spec.flags.to_le_bytes());
+    }
+
+    (section, option_ids)
+}
+
+fn build_responseheader_rules_section(
+    rules: &[CompiledRule],
+    constraint_offsets: &[u32],
+    str_pool: &mut StringPool,
+) -> Vec<u8> {
+    let mut entries = Vec::new();
+
+    for (idx, rule) in rules.iter().enumerate() {
+        let responseheader = match &rule.responseheader {
+            Some(rule) => rule,
+            None => continue,
+        };
+
+        let (name_off, name_len) = str_pool.intern(&responseheader.header);
+        let flags: u16 = if responseheader.is_exception { 1 } else { 0 };
+        let list_id = rule.list_id;
+        let constraint_offset = constraint_offsets.get(idx).copied().unwrap_or(NO_CONSTRAINT);
+
+        entries.push((constraint_offset, name_off, name_len as u32, flags, list_id));
+    }
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (constraint_offset, name_off, name_len, flags, list_id) in entries {
+        section.extend_from_slice(&constraint_offset.to_le_bytes());
+        section.extend_from_slice(&name_off.to_le_bytes());
+        section.extend_from_slice(&name_len.to_le_bytes());
+        section.extend_from_slice(&flags.to_le_bytes());
+        section.extend_from_slice(&list_id.to_le_bytes());
+    }
+
+    section
+}
+
+fn build_cosmetic_rules_section(
+    rules: &[CompiledRule],
+    constraint_offsets: &[u32],
+    str_pool: &mut StringPool,
+) -> Vec<u8> {
+    let mut entries = Vec::new();
+
+    for (idx, rule) in rules.iter().enumerate() {
+        let cosmetic = match &rule.cosmetic {
+            Some(rule) => rule,
+            None => continue,
+        };
+
+        let (selector_off, selector_len) = str_pool.intern(&cosmetic.selector);
+        let mut flags: u16 = 0;
+        if cosmetic.is_exception {
+            flags |= 1;
+        }
+        if cosmetic.is_generic {
+            flags |= 1 << 1;
+        }
+        let list_id = rule.list_id;
+        let constraint_offset = constraint_offsets.get(idx).copied().unwrap_or(NO_CONSTRAINT);
+
+        entries.push((constraint_offset, selector_off, selector_len as u32, flags, list_id));
+    }
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (constraint_offset, selector_off, selector_len, flags, list_id) in entries {
+        section.extend_from_slice(&constraint_offset.to_le_bytes());
+        section.extend_from_slice(&selector_off.to_le_bytes());
+        section.extend_from_slice(&selector_len.to_le_bytes());
+        section.extend_from_slice(&flags.to_le_bytes());
+        section.extend_from_slice(&list_id.to_le_bytes());
+    }
+
+    section
+}
+
+fn build_scriptlet_rules_section(
+    rules: &[CompiledRule],
+    constraint_offsets: &[u32],
+    str_pool: &mut StringPool,
+) -> Vec<u8> {
+    let mut entries = Vec::new();
+
+    for (idx, rule) in rules.iter().enumerate() {
+        let scriptlet = match &rule.scriptlet {
+            Some(rule) => rule,
+            None => continue,
+        };
+
+        let (scriptlet_off, scriptlet_len) = str_pool.intern(&scriptlet.scriptlet);
+        let mut flags: u16 = 0;
+        if scriptlet.is_exception {
+            flags |= 1;
+        }
+        if scriptlet.is_generic {
+            flags |= 1 << 1;
+        }
+        let list_id = rule.list_id;
+        let constraint_offset = constraint_offsets.get(idx).copied().unwrap_or(NO_CONSTRAINT);
+
+        entries.push((constraint_offset, scriptlet_off, scriptlet_len as u32, flags, list_id));
+    }
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (constraint_offset, scriptlet_off, scriptlet_len, flags, list_id) in entries {
+        section.extend_from_slice(&constraint_offset.to_le_bytes());
+        section.extend_from_slice(&scriptlet_off.to_le_bytes());
+        section.extend_from_slice(&scriptlet_len.to_le_bytes());
+        section.extend_from_slice(&flags.to_le_bytes());
+        section.extend_from_slice(&list_id.to_le_bytes());
+    }
+
+    section
+}
+
+fn build_empty_list_section() -> Vec<u8> {
+    (0u32).to_le_bytes().to_vec()
+}
+
+fn build_option_ids(
+    rules: &[CompiledRule],
+    redirect_option_ids: &[u32],
+    removeparam_option_ids: &[u32],
+    csp_option_ids: &[u32],
+    header_option_ids: &[u32],
+) -> Vec<u32> {
+    let mut merged = Vec::with_capacity(rules.len());
+    for (idx, rule) in rules.iter().enumerate() {
+        let option_id = if rule.removeparam.is_some() {
+            removeparam_option_ids.get(idx).copied().unwrap_or(NO_OPTION_ID)
+        } else if rule.csp.is_some() {
+            csp_option_ids.get(idx).copied().unwrap_or(NO_OPTION_ID)
+        } else if rule.header.is_some() {
+            header_option_ids.get(idx).copied().unwrap_or(NO_OPTION_ID)
+        } else if rule.redirect.is_some() {
+            redirect_option_ids.get(idx).copied().unwrap_or(NO_OPTION_ID)
+        } else {
+            NO_OPTION_ID
+        };
+        merged.push(option_id);
+    }
+
+    merged
+}
+
+struct RemoveparamSpec {
+    param_off: u32,
+    param_len: u32,
+}
+
+struct CspSpec {
+    spec_off: u32,
+    spec_len: u32,
+}
+
+struct HeaderSpecEntry {
+    name_off: u32,
+    name_len: u32,
+    value_off: u32,
+    value_len: u32,
+    flags: u32,
 }
 
 fn build_rules_section(rules: &[CompiledRule], constraint_offsets: &[u32], pattern_ids: &[u32], option_ids: &[u32]) -> Vec<u8> {
@@ -699,7 +1013,7 @@ fn write_u32_le(data: &mut [u8], offset: usize, value: u32) {
 #[cfg(test)]
 mod tests {
     use bb_core::hash::hash_domain;
-    use bb_core::matcher::Matcher;
+    use bb_core::matcher::{Matcher, ResponseHeader};
     use bb_core::snapshot::Snapshot;
     use bb_core::types::{MatchDecision, RequestContext, RequestType, SchemeMask};
 
@@ -944,5 +1258,266 @@ mod tests {
 
         let result = matcher.match_request(&ctx_match);
         assert_eq!(result.decision, MatchDecision::Block);
+    }
+
+    #[test]
+    fn applies_removeparam_rules() {
+        let rules = parse_filter_list("||example.com^$removeparam=utm_source");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/path?utm_source=foo&x=1",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Removeparam);
+        assert_eq!(
+            result.redirect_url.as_deref(),
+            Some("https://example.com/path?x=1")
+        );
+    }
+
+    #[test]
+    fn removeparam_exception_disables_removal() {
+        let rules = parse_filter_list(
+            "||example.com^$removeparam=utm_source\n@@||example.com^$removeparam=utm_source",
+        );
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/path?utm_source=foo&x=1",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_request(&ctx);
+        assert_eq!(result.decision, MatchDecision::Allow);
+    }
+
+    #[test]
+    fn injects_csp_and_respects_exceptions() {
+        let rules = parse_filter_list("||example.com^$csp=script-src 'none'");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/index.html",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::MAIN_FRAME,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let headers = [ResponseHeader {
+            name: "Content-Type",
+            value: "text/html",
+        }];
+
+        let result = matcher.match_response_headers(&ctx, &headers);
+        assert_eq!(result.cancel, false);
+        assert_eq!(result.csp_injections, vec!["script-src 'none'".to_string()]);
+
+        let rules = parse_filter_list(
+            "||example.com^$csp=script-src 'none'\n@@||example.com^$csp",
+        );
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let result = matcher.match_response_headers(&ctx, &headers);
+        assert!(result.csp_injections.is_empty());
+    }
+
+    #[test]
+    fn header_rules_block_and_allow() {
+        let rules = parse_filter_list("||example.com^$header=server:cloudflare");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/app.js",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::SCRIPT,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let headers = [ResponseHeader {
+            name: "Server",
+            value: "cloudflare",
+        }];
+
+        let result = matcher.match_response_headers(&ctx, &headers);
+        assert!(result.cancel);
+
+        let rules = parse_filter_list(
+            "||example.com^$header=server:cloudflare\n@@||example.com^$header=server:cloudflare",
+        );
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let result = matcher.match_response_headers(&ctx, &headers);
+        assert!(!result.cancel);
+    }
+
+    #[test]
+    fn responseheader_removal_and_exception() {
+        let rules = parse_filter_list("example.com##^responseheader(set-cookie)");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/index.html",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::MAIN_FRAME,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let headers = [
+            ResponseHeader {
+                name: "Set-Cookie",
+                value: "a=b",
+            },
+            ResponseHeader {
+                name: "X-Test",
+                value: "1",
+            },
+        ];
+
+        let result = matcher.match_response_headers(&ctx, &headers);
+        assert!(result.remove_headers.iter().any(|name| name == "set-cookie"));
+
+        let rules = parse_filter_list(
+            "example.com##^responseheader(set-cookie)\nexample.com#@#^responseheader(set-cookie)",
+        );
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let result = matcher.match_response_headers(&ctx, &headers);
+        assert!(result.remove_headers.is_empty());
+    }
+
+    #[test]
+    fn cosmetic_rules_and_generichide() {
+        let rules = parse_filter_list("example.com##.ad\nexample.com#@#.ad");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/index.html",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::MAIN_FRAME,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_cosmetics(&ctx);
+        assert!(result.css.is_empty());
+
+        let rules = parse_filter_list("##.ad\n@@||example.com^$generichide");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let result = matcher.match_cosmetics(&ctx);
+        assert!(result.css.is_empty());
+        assert_eq!(result.enable_generic, false);
+    }
+
+    #[test]
+    fn scriptlet_rules_and_exceptions() {
+        let rules = parse_filter_list("example.com##+js(set-constant, foo, bar)");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let ctx = RequestContext {
+            url: "https://example.com/index.html",
+            req_host: "example.com",
+            req_etld1: "example.com",
+            site_host: "example.com",
+            site_etld1: "example.com",
+            is_third_party: false,
+            request_type: RequestType::MAIN_FRAME,
+            scheme: SchemeMask::HTTPS,
+            tab_id: 0,
+            frame_id: 0,
+            request_id: "0",
+        };
+
+        let result = matcher.match_cosmetics(&ctx);
+        assert_eq!(result.scriptlets.len(), 1);
+        assert_eq!(result.scriptlets[0].name, "set-constant");
+
+        let rules = parse_filter_list(
+            "example.com##+js(set-constant, foo, bar)\nexample.com#@#+js(set-constant, foo, bar)",
+        );
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let result = matcher.match_cosmetics(&ctx);
+        assert!(result.scriptlets.is_empty());
+
+        let rules = parse_filter_list("#@#+js()");
+        let bytes = build_snapshot(&rules);
+        let snapshot = Snapshot::load(&bytes).expect("snapshot should load");
+        let matcher = Matcher::new(&snapshot);
+
+        let result = matcher.match_cosmetics(&ctx);
+        assert!(result.scriptlets.is_empty());
     }
 }

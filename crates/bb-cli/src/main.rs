@@ -107,12 +107,12 @@ fn cmd_compile(inputs: &[String], output: &str, verbose: bool) -> Result<(), Str
     }
 
     let parse_time = start.elapsed();
-    let rules_before = all_rules.len();
 
     let opt_start = Instant::now();
-    optimize_rules(&mut all_rules);
+    let optimize_stats = optimize_rules(&mut all_rules);
     let opt_time = opt_start.elapsed();
-    let rules_after = all_rules.len();
+    let rules_before = optimize_stats.before;
+    let rules_after = optimize_stats.after;
 
     let build_start = Instant::now();
     let snapshot_bytes = build_snapshot(&all_rules);
@@ -130,7 +130,14 @@ fn cmd_compile(inputs: &[String], output: &str, verbose: bool) -> Result<(), Str
 
     println!("Compiled {} filter lists to '{}'", inputs.len(), output);
     println!("  Lines:    {}", total_lines);
-    println!("  Rules:    {} -> {} (dedupe removed {})", rules_before, rules_after, rules_before - rules_after);
+    println!(
+        "  Rules:    {} -> {} (dedupe removed {}, badfilter removed {} incl {} directives)",
+        rules_before,
+        rules_after,
+        optimize_stats.deduped,
+        optimize_stats.badfiltered_rules + optimize_stats.badfilter_rules,
+        optimize_stats.badfilter_rules
+    );
     println!("  Size:     {} bytes ({:.1} KB)", snapshot_bytes.len(), snapshot_bytes.len() as f64 / 1024.0);
     println!("  Time:     {:.1}ms (parse: {:.1}ms, opt: {:.1}ms, build: {:.1}ms)",
         total_time.as_secs_f64() * 1000.0,

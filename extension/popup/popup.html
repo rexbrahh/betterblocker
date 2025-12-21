@@ -19,15 +19,44 @@
     <main>
       <div class="stats-card">
         <div class="stats-value" id="block-count">-</div>
-        <div class="stats-label">Requests Blocked</div>
+        <div class="stats-label">Total Blocked</div>
       </div>
 
-      <div class="controls">
-        <span class="toggle-label">Blocking Enabled</span>
-        <label class="toggle-switch">
-          <input type="checkbox" id="enabled-toggle" disabled>
-          <span class="slider"></span>
-        </label>
+      <div class="control-group">
+        <div class="control-row">
+          <div class="control-info">
+            <span class="control-title">Extension Enabled</span>
+            <span class="control-desc">Global master switch</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="enabled-toggle" disabled>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="site-section" id="site-section">
+        <div class="site-header">
+          <div class="site-info">
+            <img id="site-favicon" src="" alt="" class="site-favicon">
+            <span id="site-hostname" class="site-hostname">...</span>
+          </div>
+          <div class="site-badge">
+            <span id="site-block-count">0</span>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <div class="control-info">
+            <span class="control-title">Blocking on this site</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="site-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
     </main>
   </div>

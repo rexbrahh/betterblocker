@@ -7,6 +7,9 @@ export interface ListStats {
 export interface SnapshotStats {
   rulesBefore: number;
   rulesAfter: number;
+  rulesDeduped?: number;
+  badfilterRules?: number;
+  badfilteredRules?: number;
   listStats: ListStats[];
 }
 

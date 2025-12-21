@@ -76,6 +76,10 @@ bitflags::bitflags! {
         const HAS_HOST_ANCHOR = 1 << 8;
         /// Rule has left anchor (starts with |)
         const HAS_LEFT_ANCHOR = 1 << 9;
+        const CSP_EXCEPTION = 1 << 10;
+        const REDIRECT_RULE_EXCEPTION = 1 << 11;
+        const ELEMHIDE = 1 << 12;
+        const GENERICHIDE = 1 << 13;
     }
 }
 
@@ -115,18 +119,21 @@ impl RequestType {
     /// Parse from browser request type string.
     pub fn from_str(s: &str) -> Self {
         match s {
-            "main_frame" => Self::MAIN_FRAME,
-            "sub_frame" => Self::SUBDOCUMENT,
-            "stylesheet" => Self::STYLESHEET,
-            "script" => Self::SCRIPT,
-            "image" => Self::IMAGE,
+            "main_frame" | "document" => Self::MAIN_FRAME,
+            "sub_frame" | "subdocument" => Self::SUBDOCUMENT,
+            "stylesheet" | "css" => Self::STYLESHEET,
+            "script" | "js" => Self::SCRIPT,
+            "image" | "img" => Self::IMAGE,
             "font" => Self::FONT,
             "object" => Self::OBJECT,
-            "xmlhttprequest" => Self::XMLHTTPREQUEST,
+            "xmlhttprequest" | "xhr" => Self::XMLHTTPREQUEST,
             "ping" => Self::PING,
+            "beacon" => Self::BEACON,
+            "fetch" => Self::FETCH,
             "csp_report" => Self::CSP_REPORT,
+            "speculative" => Self::SPECULATIVE,
             "media" => Self::MEDIA,
-            "websocket" => Self::WEBSOCKET,
+            "websocket" | "ws" => Self::WEBSOCKET,
             _ => Self::OTHER,
         }
     }

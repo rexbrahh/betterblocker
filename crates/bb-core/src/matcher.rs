@@ -12,7 +12,7 @@ use crate::snapshot::{
     read_u32_le, read_u16_le,
 };
 use crate::types::{
-    MatchDecision, MatchResult, PartyMask, RequestContext, RuleAction, RuleFlags,
+    MatchDecision, MatchResult, PartyMask, RequestContext, RequestType, RuleAction, RuleFlags,
 };
 use crate::url::{extract_host, is_at_boundary, get_host_position, tokenize_url};
 
@@ -24,6 +24,44 @@ use crate::url::{extract_host, is_at_boundary, get_host_position, tokenize_url};
 pub struct Matcher<'a> {
     snapshot: &'a Snapshot<'a>,
     trusted_sites: HashSet<String>,
+}
+
+pub struct ResponseHeader<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
+}
+
+pub struct ResponseMatchResult {
+    pub cancel: bool,
+    pub rule_id: i32,
+    pub list_id: u16,
+    pub csp_injections: Vec<String>,
+    pub remove_headers: Vec<String>,
+}
+
+pub struct ScriptletCall {
+    pub name: String,
+    pub args: Vec<String>,
+}
+
+pub struct CosmeticMatchResult {
+    pub css: String,
+    pub enable_generic: bool,
+    pub scriptlets: Vec<ScriptletCall>,
+}
+
+const NO_OPTION_ID: u32 = 0xFFFF_FFFF;
+
+impl Default for ResponseMatchResult {
+    fn default() -> Self {
+        Self {
+            cancel: false,
+            rule_id: -1,
+            list_id: 0,
+            csp_injections: Vec::new(),
+            remove_headers: Vec::new(),
+        }
+    }
 }
 
 impl<'a> Matcher<'a> {
@@ -53,12 +91,307 @@ impl<'a> Matcher<'a> {
         }
 
         // A1: Dynamic filtering would go here
-        
-        // A2: removeparam would go here
-        
+
+        if let Some(result) = self.match_removeparam(ctx) {
+            return result;
+        }
+
         // A3: Static network filtering
         self.match_static_filters(ctx)
     }
+
+    pub fn match_response_headers(
+        &self,
+        ctx: &RequestContext<'_>,
+        headers: &[ResponseHeader<'_>],
+    ) -> ResponseMatchResult {
+        let mut result = ResponseMatchResult::default();
+
+        let mut candidates = Vec::new();
+        self.match_domain_sets(ctx, &mut candidates);
+        self.match_token_rules(ctx, &mut candidates);
+
+        let rules = self.snapshot.rules();
+        let document_only = ctx.request_type.intersects(RequestType::DOCUMENT);
+
+        let mut csp_injection_set: HashSet<&str> = HashSet::new();
+        let mut csp_exceptions: HashSet<&str> = HashSet::new();
+        let mut csp_disabled = false;
+
+        let mut best_important_block: Option<&MatchCandidate> = None;
+        let mut best_allow: Option<&MatchCandidate> = None;
+        let mut best_block: Option<&MatchCandidate> = None;
+
+        for candidate in &candidates {
+            let option_id = rules.option_id(candidate.rule_id);
+            if option_id == NO_OPTION_ID {
+                continue;
+            }
+
+            match candidate.action {
+                RuleAction::CspInject => {
+                    if !document_only {
+                        continue;
+                    }
+                    let flags = RuleFlags::from_bits_truncate(rules.flags(candidate.rule_id));
+                    if let Some(spec) = self.get_csp_spec(option_id) {
+                        if flags.contains(RuleFlags::CSP_EXCEPTION) {
+                            if spec.is_empty() {
+                                csp_disabled = true;
+                            } else {
+                                csp_exceptions.insert(spec);
+                            }
+                        } else {
+                            csp_injection_set.insert(spec);
+                        }
+                    }
+                }
+                RuleAction::HeaderMatchBlock | RuleAction::HeaderMatchAllow => {
+                    let spec = match self.get_header_spec(option_id) {
+                        Some(spec) => spec,
+                        None => continue,
+                    };
+                    if !header_matches(&spec, headers) {
+                        continue;
+                    }
+                    if candidate.action == RuleAction::HeaderMatchAllow {
+                        if best_allow.map_or(true, |b| candidate.priority > b.priority) {
+                            best_allow = Some(candidate);
+                        }
+                        continue;
+                    }
+
+                    let flags = RuleFlags::from_bits_truncate(rules.flags(candidate.rule_id));
+                    if flags.contains(RuleFlags::IMPORTANT) {
+                        if best_important_block.map_or(true, |b| candidate.priority > b.priority) {
+                            best_important_block = Some(candidate);
+                        }
+                    } else if best_block.map_or(true, |b| candidate.priority > b.priority) {
+                        best_block = Some(candidate);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if document_only && !csp_disabled {
+            for spec in csp_injection_set {
+                if !csp_exceptions.contains(spec) {
+                    result.csp_injections.push(spec.to_string());
+                }
+            }
+        }
+
+        if document_only {
+            let section = self.snapshot.responseheader_rules();
+            if section.len() >= 4 {
+                let mut remove_set: HashSet<&str> = HashSet::new();
+                let mut exception_set: HashSet<&str> = HashSet::new();
+                let count = read_u32_le(section, 0) as usize;
+                for idx in 0..count {
+                    let entry_offset = 4 + idx * 16;
+                    if entry_offset + 16 > section.len() {
+                        break;
+                    }
+                    let constraint_offset = read_u32_le(section, entry_offset);
+                    if !self.check_domain_constraints_offset(constraint_offset, ctx) {
+                        continue;
+                    }
+                    let name_off = read_u32_le(section, entry_offset + 4) as usize;
+                    let name_len = read_u32_le(section, entry_offset + 8) as usize;
+                    let flags = read_u16_le(section, entry_offset + 12);
+
+                    let header = match self.snapshot.get_string(name_off, name_len) {
+                        Some(name) => name,
+                        None => continue,
+                    };
+
+                    if !is_safe_response_header(header) {
+                        continue;
+                    }
+
+                    if flags & 1 != 0 {
+                        exception_set.insert(header);
+                    } else {
+                        remove_set.insert(header);
+                    }
+                }
+
+                for header in remove_set {
+                    if !exception_set.contains(header) {
+                        result.remove_headers.push(header.to_string());
+                    }
+                }
+            }
+        }
+
+        if let Some(c) = best_important_block {
+            result.cancel = true;
+            result.rule_id = c.rule_id as i32;
+            result.list_id = rules.list_id(c.rule_id);
+            return result;
+        }
+
+        if best_allow.is_some() && best_block.is_some() {
+            return result;
+        }
+
+        if let Some(c) = best_block {
+            result.cancel = true;
+            result.rule_id = c.rule_id as i32;
+            result.list_id = rules.list_id(c.rule_id);
+        }
+
+        result
+    }
+
+    pub fn match_cosmetics(&self, ctx: &RequestContext<'_>) -> CosmeticMatchResult {
+        let mut result = CosmeticMatchResult {
+            css: String::new(),
+            enable_generic: true,
+            scriptlets: Vec::new(),
+        };
+
+        let mut candidates = Vec::new();
+        self.match_domain_sets(ctx, &mut candidates);
+        self.match_token_rules(ctx, &mut candidates);
+
+        let rules = self.snapshot.rules();
+        let mut elemhide_disabled = false;
+        let mut generichide_disabled = false;
+
+        for candidate in &candidates {
+            if candidate.action != RuleAction::Allow {
+                continue;
+            }
+            let flags = RuleFlags::from_bits_truncate(rules.flags(candidate.rule_id));
+            if flags.contains(RuleFlags::ELEMHIDE) {
+                elemhide_disabled = true;
+            }
+            if flags.contains(RuleFlags::GENERICHIDE) {
+                generichide_disabled = true;
+            }
+        }
+
+        let mut specific_selectors: HashSet<&str> = HashSet::new();
+        let mut generic_selectors: HashSet<&str> = HashSet::new();
+        let mut exception_selectors: HashSet<&str> = HashSet::new();
+
+        let section = self.snapshot.cosmetic_rules();
+        if section.len() >= 4 {
+            let count = read_u32_le(section, 0) as usize;
+            for idx in 0..count {
+                let entry_offset = 4 + idx * 16;
+                if entry_offset + 16 > section.len() {
+                    break;
+                }
+                let constraint_offset = read_u32_le(section, entry_offset);
+                if !self.check_domain_constraints_offset(constraint_offset, ctx) {
+                    continue;
+                }
+                let selector_off = read_u32_le(section, entry_offset + 4) as usize;
+                let selector_len = read_u32_le(section, entry_offset + 8) as usize;
+                let flags = read_u16_le(section, entry_offset + 12);
+
+                let selector = match self.snapshot.get_string(selector_off, selector_len) {
+                    Some(value) => value,
+                    None => continue,
+                };
+
+                let is_exception = flags & 1 != 0;
+                let is_generic = flags & (1 << 1) != 0;
+
+                if is_exception {
+                    exception_selectors.insert(selector);
+                } else if is_generic {
+                    generic_selectors.insert(selector);
+                } else {
+                    specific_selectors.insert(selector);
+                }
+            }
+        }
+
+        if !elemhide_disabled {
+            let mut selectors: Vec<&str> = Vec::new();
+            for selector in specific_selectors {
+                if !exception_selectors.contains(selector) {
+                    selectors.push(selector);
+                }
+            }
+            if !generichide_disabled {
+                for selector in generic_selectors {
+                    if !exception_selectors.contains(selector) {
+                        selectors.push(selector);
+                    }
+                }
+            }
+
+            if !selectors.is_empty() {
+                result.css = format!("{}{{display:none !important;}}", selectors.join(",\n"));
+            }
+        }
+
+        result.enable_generic = !generichide_disabled;
+
+        let section = self.snapshot.scriptlet_rules();
+        if section.len() >= 4 {
+            let count = read_u32_le(section, 0) as usize;
+            let mut scriptlet_candidates: HashSet<&str> = HashSet::new();
+            let mut scriptlet_exceptions: HashSet<&str> = HashSet::new();
+            let mut scriptlet_disable_all = false;
+
+            for idx in 0..count {
+                let entry_offset = 4 + idx * 16;
+                if entry_offset + 16 > section.len() {
+                    break;
+                }
+                let constraint_offset = read_u32_le(section, entry_offset);
+                if !self.check_domain_constraints_offset(constraint_offset, ctx) {
+                    continue;
+                }
+                let scriptlet_off = read_u32_le(section, entry_offset + 4) as usize;
+                let scriptlet_len = read_u32_le(section, entry_offset + 8) as usize;
+                let flags = read_u16_le(section, entry_offset + 12);
+
+                let scriptlet_raw = match self.snapshot.get_string(scriptlet_off, scriptlet_len) {
+                    Some(value) => value,
+                    None => continue,
+                };
+
+                let is_exception = flags & 1 != 0;
+                let is_generic = flags & (1 << 1) != 0;
+
+                if is_exception && scriptlet_raw.is_empty() {
+                    scriptlet_disable_all = true;
+                    continue;
+                }
+
+                if is_generic {
+                    continue;
+                }
+
+                if is_exception {
+                    scriptlet_exceptions.insert(scriptlet_raw);
+                } else {
+                    scriptlet_candidates.insert(scriptlet_raw);
+                }
+            }
+
+            if !scriptlet_disable_all {
+                for scriptlet_raw in scriptlet_candidates {
+                    if scriptlet_exceptions.contains(scriptlet_raw) {
+                        continue;
+                    }
+                    if let Some(call) = parse_scriptlet_call(scriptlet_raw) {
+                        result.scriptlets.push(call);
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
 
     /// Match against static filters.
     fn match_static_filters(&self, ctx: &RequestContext<'_>) -> MatchResult {
@@ -72,6 +405,81 @@ impl<'a> Matcher<'a> {
 
         // Step 3: Apply precedence logic
         self.apply_precedence(&candidates)
+    }
+
+    fn match_removeparam(&self, ctx: &RequestContext<'_>) -> Option<MatchResult> {
+        let mut candidates = Vec::new();
+        self.match_token_rules(ctx, &mut candidates);
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let rules = self.snapshot.rules();
+        let mut exception_ids: HashSet<u32> = HashSet::new();
+        let mut remove_rules: Vec<(usize, u32)> = Vec::new();
+
+        for candidate in candidates {
+            let option_id = rules.option_id(candidate.rule_id);
+            if option_id == NO_OPTION_ID {
+                continue;
+            }
+            match candidate.action {
+                RuleAction::Allow => {
+                    exception_ids.insert(option_id);
+                }
+                RuleAction::Removeparam => {
+                    remove_rules.push((candidate.rule_id, option_id));
+                }
+                _ => {}
+            }
+        }
+
+        if remove_rules.is_empty() {
+            return None;
+        }
+
+        let mut remove_keys: Vec<&str> = Vec::new();
+        let mut selected_rule: Option<usize> = None;
+
+        for (rule_id, option_id) in remove_rules {
+            if exception_ids.contains(&option_id) {
+                continue;
+            }
+
+            let spec = match self.get_removeparam_spec(option_id) {
+                Some(spec) => spec,
+                None => continue,
+            };
+
+            for key in split_removeparam_spec(spec) {
+                if !remove_keys.contains(&key) {
+                    remove_keys.push(key);
+                }
+            }
+
+            if selected_rule.is_none() {
+                selected_rule = Some(rule_id);
+            }
+        }
+
+        if remove_keys.is_empty() {
+            return None;
+        }
+
+        let new_url = match remove_params(ctx.url, &remove_keys) {
+            Some(url) => url,
+            None => return None,
+        };
+
+        let rule_id = selected_rule?;
+
+        Some(MatchResult {
+            decision: MatchDecision::Removeparam,
+            rule_id: rule_id as i32,
+            list_id: rules.list_id(rule_id),
+            redirect_url: Some(new_url),
+        })
     }
 
     /// Match against domain hash sets.
@@ -256,7 +664,10 @@ impl<'a> Matcher<'a> {
     fn check_domain_constraints(&self, rule_id: usize, ctx: &RequestContext<'_>) -> bool {
         let rules = self.snapshot.rules();
         let constraint_off = rules.domain_constraint_offset(rule_id);
+        self.check_domain_constraints_offset(constraint_off, ctx)
+    }
 
+    fn check_domain_constraints_offset(&self, constraint_off: u32, ctx: &RequestContext<'_>) -> bool {
         if constraint_off == NO_CONSTRAINT {
             return true;
         }
@@ -433,6 +844,7 @@ impl<'a> Matcher<'a> {
         let mut best_allow: Option<&MatchCandidate> = None;
         let mut best_block: Option<&MatchCandidate> = None;
         let mut best_redirect: Option<&MatchCandidate> = None;
+        let mut redirect_exceptions: HashSet<u32> = HashSet::new();
 
         for c in candidates {
             match c.action {
@@ -448,6 +860,17 @@ impl<'a> Matcher<'a> {
                     }
                 }
                 RuleAction::Allow => {
+                    let flags = RuleFlags::from_bits_truncate(rules.flags(c.rule_id));
+                    if flags.contains(RuleFlags::REDIRECT_RULE_EXCEPTION) {
+                        let option_id = rules.option_id(c.rule_id);
+                        if option_id != NO_OPTION_ID {
+                            redirect_exceptions.insert(option_id);
+                        }
+                        continue;
+                    }
+                    if flags.contains(RuleFlags::ELEMHIDE) || flags.contains(RuleFlags::GENERICHIDE) {
+                        continue;
+                    }
                     if best_allow.map_or(true, |b| c.priority > b.priority) {
                         best_allow = Some(c);
                     }
@@ -475,7 +898,9 @@ impl<'a> Matcher<'a> {
             }
 
             if let Some(redirect) = best_redirect {
-                if let Some(url) = self.get_redirect_url(redirect.rule_id) {
+                let option_id = rules.option_id(redirect.rule_id);
+                if option_id != NO_OPTION_ID && redirect_exceptions.contains(&option_id) {
+                } else if let Some(url) = self.get_redirect_url(redirect.rule_id) {
                     return MatchResult {
                         decision: MatchDecision::Redirect,
                         rule_id: c.rule_id as i32,
@@ -518,7 +943,9 @@ impl<'a> Matcher<'a> {
             }
 
             if let Some(redirect) = best_redirect {
-                if let Some(url) = self.get_redirect_url(redirect.rule_id) {
+                let option_id = rules.option_id(redirect.rule_id);
+                if option_id != NO_OPTION_ID && redirect_exceptions.contains(&option_id) {
+                } else if let Some(url) = self.get_redirect_url(redirect.rule_id) {
                     return MatchResult {
                         decision: MatchDecision::Redirect,
                         rule_id: c.rule_id as i32,
@@ -556,7 +983,7 @@ impl<'a> Matcher<'a> {
     }
 
     fn get_redirect_url_by_option(&self, option_id: u32) -> Option<String> {
-        if option_id == 0xFFFF_FFFF {
+        if option_id == NO_OPTION_ID {
             return None;
         }
 
@@ -581,6 +1008,98 @@ impl<'a> Matcher<'a> {
 
         self.snapshot.get_string(path_str_off, path_str_len).map(|s| s.to_string())
     }
+
+    fn get_removeparam_spec(&self, option_id: u32) -> Option<&str> {
+        if option_id == NO_OPTION_ID {
+            return None;
+        }
+
+        let section = self.snapshot.removeparam_specs();
+        if section.len() < 4 {
+            return None;
+        }
+
+        let spec_count = read_u32_le(section, 0) as usize;
+        if option_id as usize >= spec_count {
+            return None;
+        }
+
+        let entry_offset = 4 + option_id as usize * 12;
+        if entry_offset + 8 > section.len() {
+            return None;
+        }
+
+        let param_off = read_u32_le(section, entry_offset) as usize;
+        let param_len = read_u32_le(section, entry_offset + 4) as usize;
+
+        self.snapshot.get_string(param_off, param_len)
+    }
+
+    fn get_csp_spec(&self, option_id: u32) -> Option<&str> {
+        if option_id == NO_OPTION_ID {
+            return None;
+        }
+
+        let section = self.snapshot.csp_specs();
+        if section.len() < 4 {
+            return None;
+        }
+
+        let spec_count = read_u32_le(section, 0) as usize;
+        if option_id as usize >= spec_count {
+            return None;
+        }
+
+        let entry_offset = 4 + option_id as usize * 12;
+        if entry_offset + 8 > section.len() {
+            return None;
+        }
+
+        let spec_off = read_u32_le(section, entry_offset) as usize;
+        let spec_len = read_u32_le(section, entry_offset + 4) as usize;
+
+        self.snapshot.get_string(spec_off, spec_len)
+    }
+
+    fn get_header_spec(&self, option_id: u32) -> Option<HeaderSpecRef<'a>> {
+        if option_id == NO_OPTION_ID {
+            return None;
+        }
+
+        let section = self.snapshot.header_specs();
+        if section.len() < 4 {
+            return None;
+        }
+
+        let spec_count = read_u32_le(section, 0) as usize;
+        if option_id as usize >= spec_count {
+            return None;
+        }
+
+        let entry_offset = 4 + option_id as usize * 20;
+        if entry_offset + 20 > section.len() {
+            return None;
+        }
+
+        let name_off = read_u32_le(section, entry_offset) as usize;
+        let name_len = read_u32_le(section, entry_offset + 4) as usize;
+        let value_off = read_u32_le(section, entry_offset + 8) as usize;
+        let value_len = read_u32_le(section, entry_offset + 12) as usize;
+        let flags = read_u32_le(section, entry_offset + 16);
+
+        let name = self.snapshot.get_string(name_off, name_len)?;
+        let value = if value_len > 0 {
+            self.snapshot.get_string(value_off, value_len)
+        } else {
+            None
+        };
+
+        Some(HeaderSpecRef {
+            name,
+            value,
+            negate: flags & 1 != 0,
+        })
+    }
 }
 
 // =============================================================================
@@ -593,6 +1112,12 @@ struct MatchCandidate {
     action: RuleAction,
     is_important: bool,
     priority: i16,
+}
+
+struct HeaderSpecRef<'a> {
+    name: &'a str,
+    value: Option<&'a str>,
+    negate: bool,
 }
 
 fn find_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -611,5 +1136,110 @@ fn find_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     }
 
     None
+}
+
+fn header_matches(spec: &HeaderSpecRef<'_>, headers: &[ResponseHeader<'_>]) -> bool {
+    let mut found = false;
+    let mut any_value_match = false;
+
+    for header in headers {
+        if !header.name.eq_ignore_ascii_case(spec.name) {
+            continue;
+        }
+        found = true;
+
+        if let Some(value) = spec.value {
+            if find_case_insensitive(header.value.as_bytes(), value.as_bytes()).is_some() {
+                any_value_match = true;
+            }
+        }
+    }
+
+    match spec.value {
+        None => {
+            if spec.negate {
+                !found
+            } else {
+                found
+            }
+        }
+        Some(_) => {
+            if spec.negate {
+                found && !any_value_match
+            } else {
+                any_value_match
+            }
+        }
+    }
+}
+
+fn parse_scriptlet_call(raw: &str) -> Option<ScriptletCall> {
+    let mut parts = raw.split(',').map(|part| part.trim()).filter(|part| !part.is_empty());
+    let name = parts.next()?;
+    let args = parts.map(|part| part.to_string()).collect();
+    Some(ScriptletCall {
+        name: name.to_string(),
+        args,
+    })
+}
+
+fn is_safe_response_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("location")
+        || name.eq_ignore_ascii_case("refresh")
+        || name.eq_ignore_ascii_case("report-to")
+        || name.eq_ignore_ascii_case("set-cookie")
+}
+
+fn split_removeparam_spec(spec: &str) -> Vec<&str> {
+    spec.split(|ch| ch == '|' || ch == ',')
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+fn remove_params(url: &str, remove_keys: &[&str]) -> Option<String> {
+    let query_start = url.find('?')?;
+    let fragment_start = url[query_start + 1..].find('#').map(|idx| idx + query_start + 1);
+
+    let base = &url[..query_start];
+    let query_end = fragment_start.unwrap_or_else(|| url.len());
+    let query = &url[query_start + 1..query_end];
+    let fragment = fragment_start.map(|idx| &url[idx..]).unwrap_or("");
+
+    if query.is_empty() {
+        return None;
+    }
+
+    let mut kept = Vec::new();
+    let mut removed = false;
+
+    for part in query.split('&') {
+        if part.is_empty() {
+            continue;
+        }
+        let name = match part.find('=') {
+            Some(idx) => &part[..idx],
+            None => part,
+        };
+        if remove_keys.contains(&name) {
+            removed = true;
+            continue;
+        }
+        kept.push(part);
+    }
+
+    if !removed {
+        return None;
+    }
+
+    let mut out = String::with_capacity(url.len());
+    out.push_str(base);
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    out.push_str(fragment);
+
+    Some(out)
 }
 

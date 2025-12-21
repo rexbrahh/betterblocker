@@ -9,6 +9,33 @@ pub struct DomainConstraint {
     pub exclude: Vec<Hash64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HeaderSpec {
+    pub name: String,
+    pub value: Option<String>,
+    pub negate: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CosmeticRule {
+    pub selector: String,
+    pub is_exception: bool,
+    pub is_generic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScriptletRule {
+    pub scriptlet: String,
+    pub is_exception: bool,
+    pub is_generic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResponseHeaderRule {
+    pub header: String,
+    pub is_exception: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledRule {
     pub action: RuleAction,
@@ -22,6 +49,13 @@ pub struct CompiledRule {
     pub scheme_mask: SchemeMask,
     pub domain_constraints: Option<DomainConstraint>,
     pub redirect: Option<String>,
+    pub removeparam: Option<String>,
+    pub csp: Option<String>,
+    pub header: Option<HeaderSpec>,
+    pub cosmetic: Option<CosmeticRule>,
+    pub scriptlet: Option<ScriptletRule>,
+    pub responseheader: Option<ResponseHeaderRule>,
+    pub is_badfilter: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,6 +75,21 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
             continue;
         }
 
+        if let Some(rule) = parse_responseheader_line(line) {
+            rules.push(rule);
+            continue;
+        }
+
+        if let Some(rule) = parse_scriptlet_line(line) {
+            rules.push(rule);
+            continue;
+        }
+
+        if let Some(rule) = parse_cosmetic_line(line) {
+            rules.push(rule);
+            continue;
+        }
+
         if line.contains("##") || line.contains("#@#") || line.contains("#?#") {
             continue;
         }
@@ -52,7 +101,7 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
         }
 
         let (pattern_part, options_text) = split_rule_options(line);
-        let options = match options_text {
+        let mut options = match options_text {
             Some(options_text) => match parse_options(options_text) {
                 Some(options) => options,
                 None => continue,
@@ -61,41 +110,88 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
         };
 
         let pattern_str = pattern_part.trim();
+        let is_badfilter = options.is_badfilter;
+        let removeparam = options.removeparam.clone();
+        let csp = options.csp.clone();
+        let header = options.header.clone();
 
-        if let Some(domain) = parse_host_anchor_rule(pattern_str) {
-            let (final_action, final_flags, redirect) = finalize_rule(action, &options);
-            rules.push(CompiledRule {
-                action: final_action,
-                flags: final_flags,
-                domain,
-                pattern: None,
-                anchor_type: AnchorType::Hostname,
-                list_id: 0,
-                type_mask: options.type_mask,
-                party_mask: options.party_mask,
-                scheme_mask: options.scheme_mask,
-                domain_constraints: options.domain_constraints.clone(),
-                redirect,
-            });
-            continue;
+        if csp.is_some() {
+            if action == RuleAction::Allow {
+                options.flags |= RuleFlags::CSP_EXCEPTION;
+            }
+            action = RuleAction::CspInject;
+        } else if header.is_some() {
+            action = if action == RuleAction::Allow {
+                RuleAction::HeaderMatchAllow
+            } else {
+                RuleAction::HeaderMatchBlock
+            };
+        } else if removeparam.is_some() && action == RuleAction::Block {
+            action = RuleAction::Removeparam;
         }
 
-        if let Some(domain) = parse_hosts_file_domain(pattern_str) {
-            let (final_action, final_flags, redirect) = finalize_rule(action, &options);
-            rules.push(CompiledRule {
-                action: final_action,
-                flags: final_flags,
-                domain,
-                pattern: None,
-                anchor_type: AnchorType::Hostname,
-                list_id: 0,
-                type_mask: options.type_mask,
-                party_mask: options.party_mask,
-                scheme_mask: options.scheme_mask,
-                domain_constraints: options.domain_constraints.clone(),
-                redirect,
-            });
-            continue;
+        let cosmetic_override = options.flags.intersects(RuleFlags::ELEMHIDE | RuleFlags::GENERICHIDE);
+        if cosmetic_override {
+            if action != RuleAction::Allow
+                || removeparam.is_some()
+                || csp.is_some()
+                || header.is_some()
+                || options.redirect.is_some()
+            {
+                continue;
+            }
+        }
+
+        if options.removeparam.is_none() && options.csp.is_none() && options.header.is_none() {
+            if let Some(domain) = parse_host_anchor_rule(pattern_str) {
+                let (final_action, final_flags, redirect) = finalize_rule(action, &options);
+                rules.push(CompiledRule {
+                    action: final_action,
+                    flags: final_flags,
+                    domain,
+                    pattern: None,
+                    anchor_type: AnchorType::Hostname,
+                    list_id: 0,
+                    type_mask: options.type_mask,
+                    party_mask: options.party_mask,
+                    scheme_mask: options.scheme_mask,
+                    domain_constraints: options.domain_constraints.clone(),
+                    redirect,
+                    removeparam: removeparam.clone(),
+                    csp: csp.clone(),
+                    header: header.clone(),
+                    cosmetic: None,
+                    scriptlet: None,
+                    responseheader: None,
+                    is_badfilter,
+                });
+                continue;
+            }
+
+            if let Some(domain) = parse_hosts_file_domain(pattern_str) {
+                let (final_action, final_flags, redirect) = finalize_rule(action, &options);
+                rules.push(CompiledRule {
+                    action: final_action,
+                    flags: final_flags,
+                    domain,
+                    pattern: None,
+                    anchor_type: AnchorType::Hostname,
+                    list_id: 0,
+                    type_mask: options.type_mask,
+                    party_mask: options.party_mask,
+                    scheme_mask: options.scheme_mask,
+                    domain_constraints: options.domain_constraints.clone(),
+                    redirect,
+                    removeparam: removeparam.clone(),
+                    csp: csp.clone(),
+                    header: header.clone(),
+                    cosmetic: None,
+                    scriptlet: None,
+                    responseheader: None,
+                    is_badfilter,
+                });
+                continue;
+            }
         }
 
         if let Some(parsed) = parse_pattern_rule(pattern_str) {
@@ -112,6 +208,13 @@ pub fn parse_filter_list(text: &str) -> Vec<CompiledRule> {
                 scheme_mask: options.scheme_mask,
                 domain_constraints: options.domain_constraints,
                 redirect,
+                removeparam,
+                csp,
+                header,
+                cosmetic: None,
+                scriptlet: None,
+                responseheader: None,
+                is_badfilter,
             });
         }
     }
@@ -124,9 +227,20 @@ fn finalize_rule(action: RuleAction, options: &ParsedOptions) -> (RuleAction, Ru
     let mut final_flags = options.flags;
     let mut redirect = options.redirect.clone();
 
+    if matches!(
+        action,
+        RuleAction::Removeparam | RuleAction::CspInject | RuleAction::HeaderMatchBlock | RuleAction::HeaderMatchAllow
+    ) {
+        return (final_action, final_flags, None);
+    }
+
     if redirect.is_some() {
         if options.redirect_is_rule {
-            final_action = RuleAction::RedirectDirective;
+            if action == RuleAction::Allow {
+                final_flags |= RuleFlags::REDIRECT_RULE_EXCEPTION;
+            } else {
+                final_action = RuleAction::RedirectDirective;
+            }
         } else if action == RuleAction::Allow {
             redirect = None;
         } else {
@@ -146,6 +260,10 @@ struct ParsedOptions {
     domain_constraints: Option<DomainConstraint>,
     redirect: Option<String>,
     redirect_is_rule: bool,
+    removeparam: Option<String>,
+    csp: Option<String>,
+    header: Option<HeaderSpec>,
+    is_badfilter: bool,
 }
 
 impl Default for ParsedOptions {
@@ -158,6 +276,10 @@ impl Default for ParsedOptions {
             domain_constraints: None,
             redirect: None,
             redirect_is_rule: false,
+            removeparam: None,
+            csp: None,
+            header: None,
+            is_badfilter: false,
         }
     }
 }
@@ -180,6 +302,10 @@ fn parse_options(text: &str) -> Option<ParsedOptions> {
     let mut domain_constraints: Option<DomainConstraint> = None;
     let mut redirect: Option<String> = None;
     let mut redirect_is_rule = false;
+    let mut removeparam: Option<String> = None;
+    let mut csp: Option<String> = None;
+    let mut header: Option<HeaderSpec> = None;
+    let mut is_badfilter = false;
 
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -205,6 +331,21 @@ fn parse_options(text: &str) -> Option<ParsedOptions> {
             continue;
         }
 
+        if raw_lower == "badfilter" {
+            is_badfilter = true;
+            continue;
+        }
+
+        if raw_lower == "elemhide" {
+            flags |= RuleFlags::ELEMHIDE;
+            continue;
+        }
+
+        if raw_lower == "generichide" {
+            flags |= RuleFlags::GENERICHIDE;
+            continue;
+        }
+
         if let Some(domain_value) = raw_lower.strip_prefix("domain=") {
             let parsed = parse_domain_option(domain_value)?;
             domain_constraints = Some(merge_constraints(domain_constraints, parsed));
@@ -227,12 +368,45 @@ fn parse_options(text: &str) -> Option<ParsedOptions> {
             continue;
         }
 
+        if raw_lower == "csp" {
+            if csp.is_some() || header.is_some() || removeparam.is_some() {
+                return None;
+            }
+            csp = Some(String::new());
+            continue;
+        }
+
+        if let Some(_csp_value) = raw_lower.strip_prefix("csp=") {
+            if csp.is_some() || header.is_some() || removeparam.is_some() {
+                return None;
+            }
+            csp = Some(raw[4..].trim().to_string());
+            continue;
+        }
+
+        if let Some(_header_value) = raw_lower.strip_prefix("header=") {
+            if csp.is_some() || header.is_some() || removeparam.is_some() {
+                return None;
+            }
+            let spec = parse_header_option(raw[7..].trim())?;
+            header = Some(spec);
+            continue;
+        }
+
+        if let Some(removeparam_value) = raw_lower.strip_prefix("removeparam=") {
+            if removeparam_value.is_empty() || csp.is_some() || header.is_some() {
+                return None;
+            }
+            removeparam = Some(removeparam_value.to_string());
+            continue;
+        }
+
         let (negated, name) = match raw_lower.strip_prefix('~') {
             Some(rest) => (true, rest),
             None => (false, raw_lower),
         };
 
-        if name.is_empty() || name.contains('=') || name == "badfilter" {
+        if name.is_empty() || name.contains('=') {
             return None;
         }
 
@@ -278,6 +452,10 @@ fn parse_options(text: &str) -> Option<ParsedOptions> {
         domain_constraints,
         redirect,
         redirect_is_rule,
+        removeparam,
+        csp,
+        header,
+        is_badfilter,
     })
 }
 
@@ -322,6 +500,83 @@ fn parse_domain_option(value: &str) -> Option<DomainConstraint> {
     }
 
     Some(DomainConstraint { include, exclude })
+}
+
+fn parse_cosmetic_domains(value: &str) -> Option<DomainConstraint> {
+    let mut include = Vec::new();
+    let mut exclude = Vec::new();
+
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    for raw in trimmed.split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+
+        let (is_exclude, domain_raw) = match raw.strip_prefix('~') {
+            Some(rest) => (true, rest.trim()),
+            None => (false, raw),
+        };
+
+        let domain = normalize_domain(domain_raw)?;
+        let hash = hash_domain(&domain);
+
+        if is_exclude {
+            exclude.push(hash);
+        } else {
+            include.push(hash);
+        }
+    }
+
+    if include.is_empty() && exclude.is_empty() {
+        None
+    } else {
+        Some(DomainConstraint { include, exclude })
+    }
+}
+
+fn parse_header_option(raw: &str) -> Option<HeaderSpec> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let mut parts = raw.splitn(2, ':');
+    let name = parts.next()?.trim();
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return None;
+    }
+
+    let mut negate = false;
+    let mut value = parts.next().map(|v| v.trim().to_string());
+    if let Some(current) = value.as_mut() {
+        if let Some(stripped) = current.strip_prefix('~') {
+            negate = true;
+            *current = stripped.trim().to_string();
+        }
+
+        if current.starts_with('/') && current.ends_with('/') && current.len() > 1 {
+            return None;
+        }
+
+        if current.is_empty() {
+            value = None;
+        }
+    }
+
+    Some(HeaderSpec {
+        name: name.to_ascii_lowercase(),
+        value,
+        negate,
+    })
 }
 
 fn finalize_mask_u32(include: u32, exclude: u32, all: u32) -> Option<u32> {
@@ -447,6 +702,150 @@ fn normalize_domain(host: &str) -> Option<String> {
     }
 
     Some(trimmed.to_ascii_lowercase())
+}
+
+fn make_special_rule() -> CompiledRule {
+    CompiledRule {
+        action: RuleAction::ResponseCancel,
+        flags: RuleFlags::empty(),
+        domain: String::new(),
+        pattern: None,
+        anchor_type: AnchorType::None,
+        list_id: 0,
+        type_mask: RequestType::from_bits_truncate(0),
+        party_mask: PartyMask::from_bits_truncate(0),
+        scheme_mask: SchemeMask::from_bits_truncate(0),
+        domain_constraints: None,
+        redirect: None,
+        removeparam: None,
+        csp: None,
+        header: None,
+        cosmetic: None,
+        scriptlet: None,
+        responseheader: None,
+        is_badfilter: false,
+    }
+}
+
+fn parse_responseheader_line(line: &str) -> Option<CompiledRule> {
+    let exception_marker = "#@#^responseheader(";
+    let normal_marker = "##^responseheader(";
+
+    let (marker, is_exception, marker_pos) = if let Some(pos) = line.find(exception_marker) {
+        (exception_marker, true, pos)
+    } else if let Some(pos) = line.find(normal_marker) {
+        (normal_marker, false, pos)
+    } else {
+        return None;
+    };
+
+    let domain_part = line[..marker_pos].trim();
+    let start = marker_pos + marker.len();
+    let end = line.rfind(')')?;
+    if end <= start {
+        return None;
+    }
+
+    let header_raw = line[start..end].trim();
+    if header_raw.is_empty() {
+        return None;
+    }
+
+    if !header_raw
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return None;
+    }
+
+    let mut rule = make_special_rule();
+    rule.domain_constraints = parse_cosmetic_domains(domain_part);
+    rule.responseheader = Some(ResponseHeaderRule {
+        header: header_raw.to_ascii_lowercase(),
+        is_exception,
+    });
+    Some(rule)
+}
+
+fn parse_scriptlet_line(line: &str) -> Option<CompiledRule> {
+    let exception_marker = "#@#+js(";
+    let normal_marker = "##+js(";
+
+    let (marker, is_exception, marker_pos) = if let Some(pos) = line.find(exception_marker) {
+        (exception_marker, true, pos)
+    } else if let Some(pos) = line.find(normal_marker) {
+        (normal_marker, false, pos)
+    } else {
+        return None;
+    };
+
+    let domain_part = line[..marker_pos].trim();
+    let start = marker_pos + marker.len();
+    let end = line.rfind(')')?;
+    if end < start {
+        return None;
+    }
+
+    let scriptlet_raw = line[start..end].trim();
+    if scriptlet_raw.is_empty() && !is_exception {
+        return None;
+    }
+
+    let mut rule = make_special_rule();
+    rule.domain_constraints = parse_cosmetic_domains(domain_part);
+    rule.scriptlet = Some(ScriptletRule {
+        scriptlet: scriptlet_raw.to_string(),
+        is_exception,
+        is_generic: domain_part.is_empty(),
+    });
+    Some(rule)
+}
+
+fn parse_cosmetic_line(line: &str) -> Option<CompiledRule> {
+    let exception_marker = "#@#";
+    let normal_marker = "##";
+
+    let (marker, is_exception, marker_pos) = if let Some(pos) = line.find(exception_marker) {
+        (exception_marker, true, pos)
+    } else if let Some(pos) = line.find(normal_marker) {
+        (normal_marker, false, pos)
+    } else {
+        return None;
+    };
+
+    let domain_part = line[..marker_pos].trim();
+    let selector = line[marker_pos + marker.len()..].trim();
+    if selector.is_empty() {
+        return None;
+    }
+
+    if selector.starts_with('^') {
+        return None;
+    }
+
+    if selector.starts_with("+js(") {
+        return None;
+    }
+
+    if selector.contains(":has(")
+        || selector.contains(":has-text(")
+        || selector.contains(":matches-css(")
+        || selector.contains(":xpath(")
+        || selector.contains(":upward(")
+        || selector.contains(":remove(")
+        || selector.contains(":style(")
+    {
+        return None;
+    }
+
+    let mut rule = make_special_rule();
+    rule.domain_constraints = parse_cosmetic_domains(domain_part);
+    rule.cosmetic = Some(CosmeticRule {
+        selector: selector.to_string(),
+        is_exception,
+        is_generic: domain_part.is_empty(),
+    });
+    Some(rule)
 }
 
 struct ParsedPattern {

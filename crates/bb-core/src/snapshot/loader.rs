@@ -64,6 +64,16 @@ impl<'a> Snapshot<'a> {
         let section_dir_offset = read_u32_le(data, header::SECTION_DIR_OFFSET) as usize;
         let build_id = read_u32_le(data, header::BUILD_ID);
 
+        let section_dir_bytes = section_count
+            .checked_mul(SECTION_ENTRY_SIZE)
+            .ok_or_else(|| SnapshotError::InvalidSection("section directory overflow".to_string()))?;
+        let section_dir_end = section_dir_offset
+            .checked_add(section_dir_bytes)
+            .ok_or_else(|| SnapshotError::InvalidSection("section directory overflow".to_string()))?;
+        if section_dir_end > data.len() {
+            return Err(SnapshotError::InvalidSection("section directory out of bounds".to_string()));
+        }
+
         // Validate CRC32 if present
         if flags & header_flags::HAS_CRC32 != 0 {
             let stored_crc = read_u32_le(data, header::SNAPSHOT_CRC32);
@@ -87,7 +97,7 @@ impl<'a> Snapshot<'a> {
         for i in 0..section_count {
             let entry_offset = section_dir_offset + i * SECTION_ENTRY_SIZE;
             if entry_offset + SECTION_ENTRY_SIZE > data.len() {
-                break;
+                return Err(SnapshotError::InvalidSection("section directory entry out of bounds".to_string()));
             }
 
             let id_raw = read_u16_le(data, entry_offset + section_entry::ID);
@@ -105,6 +115,17 @@ impl<'a> Snapshot<'a> {
                 crc32: read_u32_le(data, entry_offset + section_entry::CRC32),
             };
 
+            let section_end = info
+                .offset
+                .checked_add(info.length)
+                .ok_or_else(|| SnapshotError::InvalidSection("section bounds overflow".to_string()))?;
+            if section_end > data.len() {
+                return Err(SnapshotError::InvalidSection(format!(
+                    "section {:?} out of bounds",
+                    info.id
+                )));
+            }
+
             sections.insert(id, info);
         }
 
@@ -115,6 +136,8 @@ impl<'a> Snapshot<'a> {
             build_id,
             sections,
         };
+
+        snapshot.validate_strpool()?;
 
         // Initialize PSL if present
         if let Some(psl_section) = snapshot.sections.get(&SectionId::PslSets) {
@@ -127,6 +150,26 @@ impl<'a> Snapshot<'a> {
 
     pub fn section_count(&self) -> usize {
         self.sections.len()
+    }
+
+    fn validate_strpool(&self) -> Result<(), SnapshotError> {
+        let section = self
+            .get_section(SectionId::StrPool)
+            .ok_or_else(|| SnapshotError::InvalidSection("missing strpool".to_string()))?;
+        if section.len() < 4 {
+            return Err(SnapshotError::InvalidSection("strpool header too short".to_string()));
+        }
+        let pool_len = read_u32_le(section, 0) as usize;
+        let bytes_end = 4usize
+            .checked_add(pool_len)
+            .ok_or_else(|| SnapshotError::InvalidSection("strpool length overflow".to_string()))?;
+        if bytes_end > section.len() {
+            return Err(SnapshotError::InvalidSection("strpool length out of bounds".to_string()));
+        }
+        if std::str::from_utf8(&section[4..bytes_end]).is_err() {
+            return Err(SnapshotError::InvalidSection("strpool utf8 invalid".to_string()));
+        }
+        Ok(())
     }
 
     pub fn get_section(&self, id: SectionId) -> Option<&'a [u8]> {
@@ -249,6 +292,34 @@ impl<'a> Snapshot<'a> {
                 }
             })
             .unwrap_or(&[])
+    }
+
+    pub fn removeparam_specs(&self) -> &'a [u8] {
+        self.get_section(SectionId::RemoveparamSpecs).unwrap_or(&[])
+    }
+
+    pub fn csp_specs(&self) -> &'a [u8] {
+        self.get_section(SectionId::CspSpecs).unwrap_or(&[])
+    }
+
+    pub fn header_specs(&self) -> &'a [u8] {
+        self.get_section(SectionId::HeaderSpecs).unwrap_or(&[])
+    }
+
+    pub fn responseheader_rules(&self) -> &'a [u8] {
+        self.get_section(SectionId::ResponseHeaderRules).unwrap_or(&[])
+    }
+
+    pub fn cosmetic_rules(&self) -> &'a [u8] {
+        self.get_section(SectionId::CosmeticRules).unwrap_or(&[])
+    }
+
+    pub fn procedural_rules(&self) -> &'a [u8] {
+        self.get_section(SectionId::ProceduralRules).unwrap_or(&[])
+    }
+
+    pub fn scriptlet_rules(&self) -> &'a [u8] {
+        self.get_section(SectionId::ScriptletRules).unwrap_or(&[])
     }
 }
 
