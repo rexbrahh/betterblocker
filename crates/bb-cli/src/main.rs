@@ -12,6 +12,33 @@ use clap::{Parser, Subcommand};
 use bb_compiler::{build_snapshot, optimize_rules, parse_filter_list};
 use bb_core::snapshot::Snapshot;
 
+mod bench;
+
+#[cfg(feature = "e2e")]
+mod e2e;
+
+#[cfg(not(feature = "e2e"))]
+mod e2e {
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    pub struct E2eOptions {
+        pub chromedriver_url: String,
+        pub extension_path: String,
+        pub headless: bool,
+    }
+
+    pub fn run_e2e(_: E2eOptions) -> Result<(), String> {
+        Err("bb-cli built without e2e support; rebuild with --features e2e".to_string())
+    }
+}
+
+mod perf_budget;
+mod snapshot;
+mod stress_hosts;
+mod ts_types;
+
+const DEFAULT_FILTER_LIST: &str = "testdata/test-filters.txt";
+
 #[derive(Parser)]
 #[command(name = "bb-cli")]
 #[command(about = "BetterBlocker filter list compiler and tools")]
@@ -61,6 +88,90 @@ enum Commands {
         #[arg(long, default_value = "0.95")]
         min_parse_ratio: f64,
     },
+
+    Bench {
+        #[arg(short, long)]
+        input: Vec<String>,
+
+        #[arg(short, long, default_value = "dist/data/snapshot.ubx")]
+        snapshot: String,
+
+        #[arg(long)]
+        no_compile: bool,
+    },
+
+    BenchRealistic {
+        #[arg(short, long)]
+        input: Vec<String>,
+
+        #[arg(short, long, default_value = "dist/data/snapshot.ubx")]
+        snapshot: String,
+
+        #[arg(long)]
+        no_compile: bool,
+
+        #[arg(long, value_enum, default_value = "both")]
+        mode: bench::BenchMode,
+
+        #[arg(long, default_value = "200")]
+        iterations: usize,
+
+        #[arg(long, default_value = "200000")]
+        warmup_ops: usize,
+
+        #[arg(long, default_value = "512")]
+        sample_batch_ops: usize,
+
+        #[arg(long)]
+        trace: Option<String>,
+
+        #[arg(long, default_value = "50000")]
+        trace_limit: usize,
+
+        #[arg(long, default_value = "60")]
+        pages: usize,
+
+        #[arg(long, default_value = "120")]
+        reqs_per_page: usize,
+
+        #[arg(long, default_value = "12648430")]
+        seed: u32,
+    },
+
+    PerfBudget {
+        #[arg(short, long)]
+        input: Vec<String>,
+
+        #[arg(short, long, default_value = "dist/data/snapshot.ubx")]
+        snapshot: String,
+
+        #[arg(long)]
+        no_compile: bool,
+    },
+
+    GenerateHosts {
+        #[arg(short, long)]
+        input: Vec<String>,
+
+        #[arg(short, long, default_value = "stress/hosts.json")]
+        output: String,
+    },
+
+    E2e {
+        #[arg(long, default_value = "http://localhost:9515")]
+        chromedriver_url: String,
+
+        #[arg(long, default_value = "dist")]
+        extension_path: String,
+
+        #[arg(long)]
+        headless: bool,
+    },
+
+    GenTypes {
+        #[arg(long, default_value = "src/shared/generated/types.ts")]
+        output: String,
+    },
 }
 
 fn main() {
@@ -75,12 +186,80 @@ fn main() {
         Commands::Validate { input } => cmd_validate(&input),
         Commands::Info { input } => cmd_info(&input),
         Commands::Check { input, min_parse_ratio } => cmd_check(&input, min_parse_ratio),
+        Commands::Bench {
+            input,
+            snapshot,
+            no_compile,
+        } => bench::run_simple(bench::SimpleBenchOptions {
+            input_paths: with_default_input(input),
+            snapshot_path: snapshot,
+            compile: !no_compile,
+        }),
+        Commands::BenchRealistic {
+            input,
+            snapshot,
+            no_compile,
+            mode,
+            iterations,
+            warmup_ops,
+            sample_batch_ops,
+            trace,
+            trace_limit,
+            pages,
+            reqs_per_page,
+            seed,
+        } => bench::run_realistic(bench::RealisticBenchOptions {
+            input_paths: with_default_input(input),
+            snapshot_path: snapshot,
+            compile: !no_compile,
+            mode,
+            iterations,
+            warmup_ops,
+            sample_batch_ops,
+            trace_path: trace,
+            trace_limit,
+            synthetic_pages: pages,
+            synthetic_reqs_per_page: reqs_per_page,
+            seed,
+        }),
+        Commands::PerfBudget {
+            input,
+            snapshot,
+            no_compile,
+        } => perf_budget::run_perf_budget(perf_budget::PerfBudgetOptions {
+            input_paths: with_default_input(input),
+            snapshot_path: snapshot,
+            compile: !no_compile,
+        }),
+        Commands::GenerateHosts { input, output } => stress_hosts::run_generate_hosts(
+            stress_hosts::StressHostsOptions {
+                inputs: input,
+                output,
+            },
+        ),
+        Commands::E2e {
+            chromedriver_url,
+            extension_path,
+            headless,
+        } => e2e::run_e2e(e2e::E2eOptions {
+            chromedriver_url,
+            extension_path,
+            headless,
+        }),
+        Commands::GenTypes { output } => ts_types::export_ts_types(Path::new(&output)),
     };
 
     if let Err(e) = result {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
+}
+
+fn with_default_input(mut input: Vec<String>) -> Vec<String> {
+    if input.is_empty() {
+        input.push(DEFAULT_FILTER_LIST.to_string());
+    }
+    input
 }
 
 fn cmd_compile(inputs: &[String], output: &str, verbose: bool) -> Result<(), String> {

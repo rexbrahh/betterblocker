@@ -13,5 +13,12 @@ path = "src/main.rs"
 bb-core = { path = "../bb-core" }
 bb-compiler = { path = "../bb-compiler" }
 clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ts-rs.workspace = true
+thirtyfour = { workspace = true, optional = true }
 tokio.workspace = true
-reqwest.workspace = true
+
+[features]
+default = []
+e2e = ["thirtyfour"]

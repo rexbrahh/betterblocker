@@ -13,19 +13,20 @@
     "build:wasm": "cd crates/bb-wasm && wasm-pack build --target web --out-dir ../../extension/wasm",
     "watch": "bun run build:dev --watch",
     "dist": "bun run build && cp -r extension/* dist/ && mkdir -p dist/data",
-    "bench": "bun run bench/bench.ts",
-    "perf-budget": "bun run bench/perf-budget.ts",
+    "bench": "cargo run --package bb-cli -- bench",
+    "bench:realistic": "cargo run --package bb-cli -- bench-realistic",
+    "perf-budget": "cargo run --package bb-cli -- perf-budget",
+    "stress:hosts": "cargo run --package bb-cli -- generate-hosts",
+    "gen:types": "cargo run --package bb-cli -- gen-types",
     "test": "bun test",
     "test:watch": "bun test --watch",
-    "test:e2e": "npx playwright test",
-    "test:e2e:headed": "npx playwright test --headed",
+    "test:e2e": "cargo run --package bb-cli --features e2e -- e2e",
+    "test:e2e:headed": "cargo run --package bb-cli --features e2e -- e2e",
     "compile": "cargo run --package bb-cli -- compile",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@playwright/test": "^1.57.0",
     "@types/bun": "^1.1.0",
-    "@types/chrome": "^0.1.32",
-    "playwright": "^1.57.0"
+    "@types/chrome": "^0.1.32"
   }
 }

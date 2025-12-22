@@ -20,6 +20,8 @@ log = "0.4"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ts-rs = "11.1"
 
 # Hashing
 twox-hash = "1.6"  # xxHash implementation
@@ -36,6 +38,7 @@ web-sys = { version = "0.3", features = ["console"] }
 clap = { version = "4.4", features = ["derive"] }
 tokio = { version = "1.35", features = ["full"] }
 reqwest = { version = "0.11", features = ["json"] }
+thirtyfour = { version = "0.36", default-features = false, features = ["rustls-tls"] }
 
 # Testing
 criterion = "0.5"
