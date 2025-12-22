@@ -381,6 +381,8 @@ let blockCount = 0;
 let snapshotStats: SnapshotStats | null = null;
 let initPromise: Promise<void> | null = null;
 let autoCompileInFlight: Promise<void> | null = null;
+// FAIL-SAFE: Track initialization state to prevent blocking all requests during startup
+let initializationComplete = false;
 
 async function loadWasm(cacheBust?: string): Promise<WasmExports> {
   const cacheSuffix = cacheBust ? `?v=${cacheBust}` : '';
@@ -499,10 +501,12 @@ async function initialize(): Promise<void> {
     }
     setupUpdateSchedule();
     updateAllBadges();
+    initializationComplete = true;
 
     console.log('[BetterBlocker] Ready');
   } catch (e) {
     console.error('[BetterBlocker] Initialization failed:', e);
+    initializationComplete = true;
     throw e;
   }
 }
@@ -791,6 +795,10 @@ interface ResponseDetails extends RequestDetails {
 function onBeforeRequest(
   details: RequestDetails
 ): chrome.webRequest.BlockingResponse | undefined {
+  if (!initializationComplete) {
+    return undefined;
+  }
+
   const perfStart = performance.now();
   const finalize = (response?: chrome.webRequest.BlockingResponse) => {
     try {
@@ -892,6 +900,10 @@ function onBeforeRequest(
 function onHeadersReceived(
   details: ResponseDetails
 ): chrome.webRequest.BlockingResponse | undefined {
+  if (!initializationComplete) {
+    return undefined;
+  }
+
   const perfStart = performance.now();
   const finalize = (response?: chrome.webRequest.BlockingResponse) => {
     if (wasm?.perf_record) {

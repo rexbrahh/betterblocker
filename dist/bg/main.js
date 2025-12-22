@@ -324,6 +324,7 @@
   var snapshotStats = null;
   var initPromise = null;
   var autoCompileInFlight = null;
+  var initializationComplete = false;
   async function loadWasm(cacheBust) {
     const cacheSuffix = cacheBust ? `?v=${cacheBust}` : "";
     const wasmUrl = `${api.runtime.getURL("wasm/bb_wasm_bg.wasm")}${cacheSuffix}`;
@@ -427,9 +428,11 @@
       }
       setupUpdateSchedule();
       updateAllBadges();
+      initializationComplete = true;
       console.log("[BetterBlocker] Ready");
     } catch (e) {
       console.error("[BetterBlocker] Initialization failed:", e);
+      initializationComplete = true;
       throw e;
     }
   }
@@ -657,6 +660,9 @@
     return { stats: snapshotStats, snapshot: snapshotBytes };
   }
   function onBeforeRequest(details) {
+    if (!initializationComplete) {
+      return;
+    }
     const perfStart = performance.now();
     const finalize = (response) => {
       try {
@@ -729,6 +735,9 @@
     }
   }
   function onHeadersReceived(details) {
+    if (!initializationComplete) {
+      return;
+    }
     const perfStart = performance.now();
     const finalize = (response) => {
       if (wasm?.perf_record) {
