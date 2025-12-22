@@ -702,6 +702,9 @@
       const result = wasm.match_request(details.url, details.type, initiator, details.tabId, details.frameId, details.requestId);
       switch (result.decision) {
         case 1 /* BLOCK */:
+          if (details.type === "main_frame") {
+            return finalize(undefined);
+          }
           incrementTabBlockCount(details.tabId);
           return finalize({ cancel: true });
         case 2 /* REDIRECT */:

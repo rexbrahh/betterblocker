@@ -854,6 +854,9 @@ function onBeforeRequest(
 
     switch (result.decision) {
       case MatchDecision.BLOCK:
+        if (details.type === 'main_frame') {
+          return finalize(undefined);
+        }
         incrementTabBlockCount(details.tabId);
         return finalize({ cancel: true });
 
