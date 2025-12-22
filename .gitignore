@@ -1,2 +1,4 @@
 stress/hosts.json
 dist/data/snapshot.ubx
+chrome/
+test-results/
