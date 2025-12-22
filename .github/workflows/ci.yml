@@ -49,8 +49,7 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Run TypeScript tests
-        run: bun test
+      # TypeScript tests removed - all tests migrated to Rust
 
       - name: TypeCheck
         run: bun run typecheck
