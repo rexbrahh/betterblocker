@@ -209,6 +209,21 @@ mod tests {
     }
 
     #[test]
+    fn test_murmur3_empty_string() {
+        let h = murmur3_32(b"", 0);
+        assert_eq!(h, h);
+    }
+
+    #[test]
+    fn test_murmur3_various_lengths() {
+        for len in 1..=20 {
+            let s = vec![b'a'; len];
+            let h = murmur3_32(&s, 0);
+            assert_eq!(h, h);
+        }
+    }
+
+    #[test]
     fn test_hash64_never_zero() {
         // Test many strings to ensure we never get the sentinel value
         let test_strings = [
@@ -222,6 +237,14 @@ mod tests {
             let h = hash64(s);
             assert!(!h.is_empty(), "hash64({:?}) returned empty sentinel", s);
         }
+    }
+
+    #[test]
+    fn test_hash64_is_empty() {
+        let empty = Hash64 { lo: 0, hi: 0 };
+        let non_empty = Hash64 { lo: 1, hi: 0 };
+        assert!(empty.is_empty());
+        assert!(!non_empty.is_empty());
     }
 
     #[test]
@@ -243,6 +266,13 @@ mod tests {
         let c1 = crc32(&data);
         let c2 = crc32(&data);
         assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn test_crc32_empty() {
+        let data: [u8; 0] = [];
+        let c = crc32(&data);
+        assert_eq!(c, c);
     }
 
     #[test]
