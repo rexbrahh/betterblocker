@@ -82,100 +82,6 @@
     });
   }
 
-  // src/bg/trace.ts
-  var enabled = false;
-  var maxEntries = 50000;
-  var entries = [];
-  function traceConfigure(on, max = 50000) {
-    enabled = on;
-    maxEntries = Math.max(1000, Math.min(500000, Math.floor(max)));
-    if (!enabled) {
-      entries = [];
-    }
-  }
-  function traceMaybeRecord(details) {
-    if (!enabled)
-      return;
-    if (entries.length >= maxEntries)
-      return;
-    const url = String(details?.url || "");
-    if (!url)
-      return;
-    const initiator = typeof details?.initiator === "string" && details.initiator || typeof details?.documentUrl === "string" && details.documentUrl || typeof details?.originUrl === "string" && details.originUrl || undefined;
-    entries.push({
-      url,
-      type: String(details?.type || "other"),
-      initiator,
-      tabId: Number.isFinite(details?.tabId) ? details.tabId : -1,
-      frameId: Number.isFinite(details?.frameId) ? details.frameId : 0,
-      requestId: String(details?.requestId || "")
-    });
-  }
-  function traceExportJsonl() {
-    return entries.map((entry) => JSON.stringify(entry)).join(`
-`) + `
-`;
-  }
-  function traceStats() {
-    return { enabled, count: entries.length, max: maxEntries };
-  }
-  var perfEnabled = false;
-  var perfMaxEntries = 1e5;
-  var perfEntries = {
-    beforeRequest: [],
-    headersReceived: []
-  };
-  function computePercentile(values, percentile) {
-    if (values.length === 0) {
-      return 0;
-    }
-    const sorted = [...values].sort((a, b) => a - b);
-    const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(sorted.length * percentile)));
-    return sorted[idx] ?? 0;
-  }
-  function summarize(values) {
-    if (values.length === 0) {
-      return { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 };
-    }
-    const sorted = [...values].sort((a, b) => a - b);
-    return {
-      count: sorted.length,
-      min: sorted[0] ?? 0,
-      max: sorted[sorted.length - 1] ?? 0,
-      p50: computePercentile(sorted, 0.5),
-      p95: computePercentile(sorted, 0.95),
-      p99: computePercentile(sorted, 0.99)
-    };
-  }
-  function perfConfigure(on, max = 1e5) {
-    perfEnabled = on;
-    perfMaxEntries = Math.max(1000, Math.min(1e6, Math.floor(max)));
-    if (!perfEnabled) {
-      perfEntries.beforeRequest = [];
-      perfEntries.headersReceived = [];
-    }
-  }
-  function perfMaybeRecord(phase, durationMs) {
-    if (!perfEnabled) {
-      return;
-    }
-    const bucket = perfEntries[phase];
-    if (!bucket || bucket.length >= perfMaxEntries) {
-      return;
-    }
-    bucket.push(durationMs);
-  }
-  function perfStats() {
-    return {
-      enabled: perfEnabled,
-      beforeRequest: summarize(perfEntries.beforeRequest),
-      headersReceived: summarize(perfEntries.headersReceived)
-    };
-  }
-  function perfExportJson() {
-    return JSON.stringify(perfEntries);
-  }
-
   // src/bg/main.ts
   var api = typeof browser !== "undefined" ? browser : chrome;
   var STORAGE_KEY = "filterLists";
@@ -220,50 +126,47 @@
   var mainFrameRequestIdByTab = new Map;
   var dynamicRules = [];
   var settings = { ...DEFAULT_SETTINGS };
-  var removeparamRedirects = new Map;
-  var REMOVEPARAM_TTL_MS = 1e4;
   var BADGE_COLOR = "#d94848";
-  function clearRemoveparamHistory(tabId) {
-    for (const key of removeparamRedirects.keys()) {
-      if (key.startsWith(`${tabId}:`)) {
-        removeparamRedirects.delete(key);
-      }
-    }
-  }
-  function pruneRemoveparamHistory(now) {
-    for (const [key, entry] of removeparamRedirects) {
-      if (now - entry.ts >= REMOVEPARAM_TTL_MS) {
-        removeparamRedirects.delete(key);
-      }
-    }
-  }
-  function getRemoveparamKey(details) {
-    return `${details.tabId}:${details.frameId}:${details.url}`;
-  }
-  function shouldSkipRemoveparam(details, redirectUrl) {
-    const now = Date.now();
-    pruneRemoveparamHistory(now);
-    const key = getRemoveparamKey(details);
-    const existing = removeparamRedirects.get(key);
-    if (existing && now - existing.ts < REMOVEPARAM_TTL_MS) {
-      return true;
-    }
-    removeparamRedirects.set(key, { url: redirectUrl, ts: now });
-    return false;
-  }
   async function loadDynamicRules() {
     return new Promise((resolve) => {
       api.storage.local.get([DYNAMIC_RULES_KEY], (result) => {
         const rules = result[DYNAMIC_RULES_KEY];
         dynamicRules = Array.isArray(rules) ? rules : [];
+        syncDynamicRules();
         resolve();
       });
     });
   }
   async function saveDynamicRules(rules) {
     return new Promise((resolve) => {
-      api.storage.local.set({ [DYNAMIC_RULES_KEY]: rules }, () => resolve());
+      api.storage.local.set({ [DYNAMIC_RULES_KEY]: rules }, () => {
+        syncDynamicRules();
+        resolve();
+      });
     });
+  }
+  function syncDynamicRules() {
+    if (!wasm?.set_dynamic_rules) {
+      return;
+    }
+    try {
+      wasm.set_dynamic_rules(dynamicRules);
+    } catch (e) {
+      console.warn("[BetterBlocker] Failed to sync dynamic rules:", e);
+    }
+  }
+  function syncRuntimeSettings() {
+    if (!wasm?.set_runtime_settings) {
+      return;
+    }
+    try {
+      wasm.set_runtime_settings({
+        dynamicFilteringEnabled: settings.dynamicFilteringEnabled,
+        disabledSites: settings.disabledSites
+      });
+    } catch (e) {
+      console.warn("[BetterBlocker] Failed to sync runtime settings:", e);
+    }
   }
   function normalizeSettings(value) {
     const raw = value ?? {};
@@ -285,6 +188,7 @@
       api.storage.sync.get([SETTINGS_KEY], (result) => {
         const stored = result[SETTINGS_KEY];
         settings = normalizeSettings(stored);
+        syncRuntimeSettings();
         resolve();
       });
     });
@@ -296,9 +200,16 @@
   }
   function applySettings(update) {
     settings = normalizeSettings({ ...settings, ...update });
+    syncRuntimeSettings();
     return settings;
   }
   function getSitePattern(url) {
+    if (!url) {
+      return null;
+    }
+    if (wasm?.get_site_pattern_js) {
+      return wasm.get_site_pattern_js(url) ?? null;
+    }
     const host = extractHost(url);
     if (!host) {
       return null;
@@ -310,11 +221,10 @@
     if (!url) {
       return false;
     }
-    const host = extractHost(url);
-    if (!host) {
-      return false;
+    if (wasm?.is_site_disabled_js) {
+      return wasm.is_site_disabled_js(url);
     }
-    return settings.disabledSites.some((pattern) => hostMatches(pattern, host));
+    return false;
   }
   function updateBadge(tabId) {
     if (tabId < 0) {
@@ -378,110 +288,11 @@
     }
     return host;
   }
-  function hostMatches(pattern, host) {
-    if (!pattern || pattern === "*") {
-      return true;
+  function matchDynamic(details, initiator) {
+    if (!wasm?.match_dynamic) {
+      return { action: 0, isOverlyBroad: false };
     }
-    if (!host) {
-      return false;
-    }
-    if (host === pattern) {
-      return true;
-    }
-    return host.endsWith(`.${pattern}`);
-  }
-  function targetMatches(pattern, reqHost, reqEtld1, isThirdParty) {
-    if (!pattern || pattern === "*") {
-      return true;
-    }
-    if (pattern === "3p" || pattern === "third-party") {
-      return isThirdParty;
-    }
-    if (pattern === "1p" || pattern === "first-party") {
-      return !isThirdParty;
-    }
-    if (reqEtld1 && reqEtld1 === pattern) {
-      return true;
-    }
-    return hostMatches(pattern, reqHost);
-  }
-  function typeMatches(ruleType, requestType) {
-    if (!ruleType || ruleType === "*") {
-      return true;
-    }
-    const normalized = ruleType.toLowerCase();
-    if (normalized === "document") {
-      return requestType === "main_frame" || requestType === "sub_frame";
-    }
-    if (normalized === "subdocument" || normalized === "sub_frame") {
-      return requestType === "sub_frame";
-    }
-    if (normalized === "main_frame") {
-      return requestType === "main_frame";
-    }
-    if (normalized === "xhr") {
-      return requestType === "xmlhttprequest";
-    }
-    return normalized === requestType;
-  }
-  function isOverlyBroadDynamicRule(rule) {
-    if (!rule) {
-      return false;
-    }
-    const sitePattern = rule.site?.toLowerCase() ?? "*";
-    const targetPattern = rule.target?.toLowerCase() ?? "*";
-    const typePattern = rule.type?.toLowerCase() ?? "*";
-    const isGlobalSite = sitePattern === "*";
-    const isGlobalTarget = targetPattern === "*";
-    const isMainFrameType = typePattern === "*" || typePattern === "main_frame" || typePattern === "document";
-    return isGlobalSite && isGlobalTarget && isMainFrameType;
-  }
-  function matchDynamicRules(details, initiator) {
-    if (!settings.dynamicFilteringEnabled || dynamicRules.length === 0) {
-      return { action: 0 /* NOOP */, rule: undefined };
-    }
-    const reqHost = extractHost(details.url);
-    const siteUrl = initiator ?? details.url;
-    const siteHost = extractHost(siteUrl);
-    const siteEtld1 = getEtld1(siteHost);
-    const reqEtld1 = getEtld1(reqHost);
-    const isThirdParty = siteEtld1.length > 0 && reqEtld1.length > 0 && siteEtld1 !== reqEtld1;
-    let bestAction = 0 /* NOOP */;
-    let bestRule;
-    let bestScore = -1;
-    let bestIndex = -1;
-    for (let i = 0;i < dynamicRules.length; i++) {
-      const rule = dynamicRules[i];
-      if (!rule) {
-        continue;
-      }
-      const sitePattern = rule.site?.toLowerCase() ?? "*";
-      const targetPattern = rule.target?.toLowerCase() ?? "*";
-      const typePattern = rule.type?.toLowerCase() ?? "*";
-      if (!hostMatches(sitePattern, siteHost)) {
-        continue;
-      }
-      if (!targetMatches(targetPattern, reqHost, reqEtld1, isThirdParty)) {
-        continue;
-      }
-      if (!typeMatches(typePattern, details.type)) {
-        continue;
-      }
-      let score = 0;
-      if (sitePattern !== "*")
-        score += 1;
-      if (targetPattern !== "*")
-        score += 1;
-      if (typePattern !== "*")
-        score += 1;
-      if (score > bestScore || score === bestScore && i > bestIndex) {
-        bestScore = score;
-        bestIndex = i;
-        bestAction = rule.action;
-        bestRule = rule;
-      }
-    }
-    return { action: bestAction, rule: bestRule };
+    return wasm.match_dynamic(details.url, details.type, initiator);
   }
   function normalizeContextUrl(value) {
     if (!value) {
@@ -563,6 +374,8 @@
       }
     }
     wasm = nextWasm;
+    syncRuntimeSettings();
+    syncDynamicRules();
     return true;
   }
   async function initialize() {
@@ -785,23 +598,21 @@
       })));
       return { stats: null, snapshot: null };
     }
-    const listTextCache = new Map();
-    const listTexts = await Promise.all(
-      enabledLists.map((list) => {
-        const url = list.url.trim();
-        let cached = listTextCache.get(url);
-        if (!cached) {
-          cached = fetchListText(url);
-          listTextCache.set(url, cached);
-        }
-        return cached;
-      })
-    );
+    const listTextCache = new Map;
+    const listTexts = await Promise.all(enabledLists.map((list) => {
+      const url = list.url.trim();
+      let cached = listTextCache.get(url);
+      if (!cached) {
+        cached = fetchListText(url);
+        listTextCache.set(url, cached);
+      }
+      return cached;
+    }));
     const compileResult = wasm.compile_filter_lists(listTexts);
     const now = new Date().toISOString();
     const listStats = compileResult.listStats ?? [];
     const updatedLists = lists.map((list) => {
-      const idx = enabledLists.findIndex((enabled2) => enabled2.id === list.id);
+      const idx = enabledLists.findIndex((enabled) => enabled.id === list.id);
       if (idx === -1) {
         return { ...list, ruleCount: 0 };
       }
@@ -846,10 +657,11 @@
     return { stats: snapshotStats, snapshot: snapshotBytes };
   }
   function onBeforeRequest(details) {
-    traceMaybeRecord(details);
     const perfStart = performance.now();
     const finalize = (response) => {
-      perfMaybeRecord("beforeRequest", performance.now() - perfStart);
+      if (wasm?.perf_record) {
+        wasm.perf_record(0, performance.now() - perfStart);
+      }
       return response;
     };
     if (details.tabId < 0) {
@@ -860,19 +672,18 @@
       return finalize(undefined);
     }
     const initiator = getContextUrl(details);
+    if (wasm?.trace_record) {
+      wasm.trace_record(details.url, details.type, initiator, details.tabId, details.frameId, details.requestId);
+    }
     if (isSiteDisabled(initiator ?? details.url)) {
       return finalize(undefined);
     }
-    const dynamicMatch = matchDynamicRules(details, initiator);
-    if (dynamicMatch.action === 1 /* BLOCK */) {
-      if (details.type === "main_frame" && isOverlyBroadDynamicRule(dynamicMatch.rule)) {
-        console.warn("[BetterBlocker] Skipping overly broad dynamic rule for main_frame", dynamicMatch.rule);
-        return finalize(undefined);
-      }
+    const dynamicMatch = matchDynamic(details, initiator);
+    if (dynamicMatch.action === 1) {
       incrementTabBlockCount(details.tabId);
       return finalize({ cancel: true });
     }
-    if (dynamicMatch.action === 2 /* ALLOW */) {
+    if (dynamicMatch.action === 2) {
       return finalize(undefined);
     }
     try {
@@ -894,8 +705,11 @@
             return finalize(undefined);
           }
           if (result.redirectUrl) {
-            if (shouldSkipRemoveparam(details, result.redirectUrl)) {
-              return finalize(undefined);
+            if (wasm?.removeparam_should_skip) {
+              const skip = wasm.removeparam_should_skip(details.tabId, details.frameId, details.url, result.redirectUrl);
+              if (skip) {
+                return finalize(undefined);
+              }
             }
             return finalize({ redirectUrl: result.redirectUrl });
           }
@@ -911,7 +725,9 @@
   function onHeadersReceived(details) {
     const perfStart = performance.now();
     const finalize = (response) => {
-      perfMaybeRecord("headersReceived", performance.now() - perfStart);
+      if (wasm?.perf_record) {
+        wasm.perf_record(1, performance.now() - perfStart);
+      }
       return response;
     };
     if (details.tabId < 0) {
@@ -969,7 +785,9 @@
       topFrameByTab.delete(tabId);
       blockedByTab.delete(tabId);
       mainFrameRequestIdByTab.delete(tabId);
-      clearRemoveparamHistory(tabId);
+      if (wasm?.removeparam_clear_tab) {
+        wasm.removeparam_clear_tab(tabId);
+      }
     });
   }
   function setupMessageHandlers() {
@@ -1104,34 +922,60 @@
             sendResponse({ success: false, error: e.message });
           });
           return true;
-        case "trace.start":
-          traceConfigure(true, message.maxEntries ?? 50000);
-          sendResponse({ ok: true, stats: traceStats() });
+        case "trace.start": {
+          if (wasm?.trace_configure) {
+            wasm.trace_configure(true, message.maxEntries ?? 50000);
+          }
+          const stats = wasm?.trace_stats ? wasm.trace_stats() : { enabled: false, count: 0, max: 0 };
+          sendResponse({ ok: true, stats });
           return true;
-        case "trace.stop":
-          traceConfigure(false);
-          sendResponse({ ok: true, stats: traceStats() });
+        }
+        case "trace.stop": {
+          if (wasm?.trace_configure) {
+            wasm.trace_configure(false, 0);
+          }
+          const stats = wasm?.trace_stats ? wasm.trace_stats() : { enabled: false, count: 0, max: 0 };
+          sendResponse({ ok: true, stats });
           return true;
-        case "trace.stats":
-          sendResponse({ ok: true, stats: traceStats() });
+        }
+        case "trace.stats": {
+          const stats = wasm?.trace_stats ? wasm.trace_stats() : { enabled: false, count: 0, max: 0 };
+          sendResponse({ ok: true, stats });
           return true;
-        case "trace.export":
-          sendResponse({ ok: true, jsonl: traceExportJsonl(), stats: traceStats() });
+        }
+        case "trace.export": {
+          const jsonl = wasm?.trace_export_jsonl ? wasm.trace_export_jsonl() : "";
+          const stats = wasm?.trace_stats ? wasm.trace_stats() : { enabled: false, count: 0, max: 0 };
+          sendResponse({ ok: true, jsonl, stats });
           return true;
-        case "perf.start":
-          perfConfigure(true, message.maxEntries ?? 1e5);
-          sendResponse({ ok: true, stats: perfStats() });
+        }
+        case "perf.start": {
+          if (wasm?.perf_configure) {
+            wasm.perf_configure(true, message.maxEntries ?? 1e5);
+          }
+          const stats = wasm?.perf_stats ? wasm.perf_stats() : { enabled: false, beforeRequest: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 }, headersReceived: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 } };
+          sendResponse({ ok: true, stats });
           return true;
-        case "perf.stop":
-          perfConfigure(false);
-          sendResponse({ ok: true, stats: perfStats() });
+        }
+        case "perf.stop": {
+          if (wasm?.perf_configure) {
+            wasm.perf_configure(false, 0);
+          }
+          const stats = wasm?.perf_stats ? wasm.perf_stats() : { enabled: false, beforeRequest: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 }, headersReceived: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 } };
+          sendResponse({ ok: true, stats });
           return true;
-        case "perf.stats":
-          sendResponse({ ok: true, stats: perfStats() });
+        }
+        case "perf.stats": {
+          const stats = wasm?.perf_stats ? wasm.perf_stats() : { enabled: false, beforeRequest: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 }, headersReceived: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 } };
+          sendResponse({ ok: true, stats });
           return true;
-        case "perf.export":
-          sendResponse({ ok: true, json: perfExportJson(), stats: perfStats() });
+        }
+        case "perf.export": {
+          const json = wasm?.perf_export_json ? wasm.perf_export_json() : "";
+          const stats = wasm?.perf_stats ? wasm.perf_stats() : { enabled: false, beforeRequest: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 }, headersReceived: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 } };
+          sendResponse({ ok: true, json, stats });
           return true;
+        }
         default:
           return false;
       }
