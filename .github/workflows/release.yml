@@ -40,6 +40,9 @@ jobs:
       - name: Run Rust tests
         run: cargo test --all
 
+      - name: Install binaryen
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked || true
 
