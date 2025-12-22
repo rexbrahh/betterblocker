@@ -659,15 +659,21 @@
   function onBeforeRequest(details) {
     const perfStart = performance.now();
     const finalize = (response) => {
-      if (wasm?.perf_record) {
-        wasm.perf_record(0, performance.now() - perfStart);
-      }
+      try {
+        if (wasm?.perf_record) {
+          wasm.perf_record(0, performance.now() - perfStart);
+        }
+      } catch {}
       return response;
     };
     if (details.tabId < 0) {
       return finalize(undefined);
     }
-    updateTopFrame(details);
+    try {
+      updateTopFrame(details);
+    } catch (e) {
+      console.error("[BetterBlocker] updateTopFrame error:", e);
+    }
     if (!settings.enabled || !wasm?.is_initialized()) {
       return finalize(undefined);
     }

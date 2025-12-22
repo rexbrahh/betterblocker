@@ -793,9 +793,11 @@ function onBeforeRequest(
 ): chrome.webRequest.BlockingResponse | undefined {
   const perfStart = performance.now();
   const finalize = (response?: chrome.webRequest.BlockingResponse) => {
-    if (wasm?.perf_record) {
-      wasm.perf_record(0, performance.now() - perfStart);
-    }
+    try {
+      if (wasm?.perf_record) {
+        wasm.perf_record(0, performance.now() - perfStart);
+      }
+    } catch {}
     return response;
   };
 
@@ -803,7 +805,11 @@ function onBeforeRequest(
     return finalize(undefined);
   }
 
-  updateTopFrame(details);
+  try {
+    updateTopFrame(details);
+  } catch (e) {
+    console.error('[BetterBlocker] updateTopFrame error:', e);
+  }
 
   if (!settings.enabled || !wasm?.is_initialized()) {
     return finalize(undefined);
