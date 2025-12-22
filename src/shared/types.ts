@@ -5,6 +5,18 @@
  * are used throughout the matching engine.
  */
 
+import type { UserSettings } from './generated/types.js';
+
+export type {
+  CosmeticPayload,
+  ProceduralRule,
+  ProceduralOperator,
+  ScriptletCall,
+  DynamicAction,
+  DynamicRule,
+  UserSettings,
+} from './generated/types.js';
+
 // =============================================================================
 // Rule Actions (matches RULES section action field)
 // =============================================================================
@@ -220,38 +232,6 @@ export type WebRequestType =
   | 'websocket'
   | 'other';
 
-/** Map browser request type string to our bit flag */
-export function requestTypeFromString(type: WebRequestType): RequestType {
-  switch (type) {
-    case 'main_frame':
-      return RequestType.MAIN_FRAME;
-    case 'sub_frame':
-      return RequestType.SUBDOCUMENT;
-    case 'stylesheet':
-      return RequestType.STYLESHEET;
-    case 'script':
-      return RequestType.SCRIPT;
-    case 'image':
-      return RequestType.IMAGE;
-    case 'font':
-      return RequestType.FONT;
-    case 'object':
-      return RequestType.OBJECT;
-    case 'xmlhttprequest':
-      return RequestType.XMLHTTPREQUEST;
-    case 'ping':
-      return RequestType.PING;
-    case 'csp_report':
-      return RequestType.CSP_REPORT;
-    case 'media':
-      return RequestType.MEDIA;
-    case 'websocket':
-      return RequestType.WEBSOCKET;
-    default:
-      return RequestType.OTHER;
-  }
-}
-
 // =============================================================================
 // Cosmetic filter types
 // =============================================================================
@@ -261,35 +241,6 @@ export const enum CosmeticAction {
   HIDE = 0,
   /** Exception - don't hide */
   UNHIDE = 1,
-}
-
-export interface CosmeticPayload {
-  /** CSS text to inject (combined selectors) */
-  css: string;
-  /** Whether generic cosmetics are enabled for this page */
-  enableGeneric: boolean;
-  procedural: string[];
-  /** Scriptlets to inject */
-  scriptlets: ScriptletCall[];
-}
-
-export interface ProceduralProgram {
-  /** Operator chain (e.g., has-text, xpath, etc.) */
-  operators: ProceduralOperator[];
-}
-
-export interface ProceduralOperator {
-  /** Operator type */
-  type: string;
-  /** Operator arguments */
-  args: string;
-}
-
-export interface ScriptletCall {
-  /** Scriptlet function name */
-  name: string;
-  /** Arguments to pass */
-  args: string[];
 }
 
 // =============================================================================
@@ -320,37 +271,6 @@ export interface LogEntry {
 // =============================================================================
 // Dynamic filtering types
 // =============================================================================
-
-export const enum DynamicAction {
-  /** No override, use static filters */
-  NOOP = 0,
-  /** Block */
-  BLOCK = 1,
-  /** Allow */
-  ALLOW = 2,
-}
-
-export interface DynamicRule {
-  /** Site pattern (*, eTLD+1, or full host) */
-  site: string;
-  /** Target pattern (*, 3p, or specific eTLD+1) */
-  target: string;
-  /** Request type (or * for all) */
-  type: string;
-  /** Action */
-  action: DynamicAction;
-}
-
-export interface UserSettings {
-  enabled: boolean;
-  cosmeticsEnabled: boolean;
-  scriptletsEnabled: boolean;
-  dynamicFilteringEnabled: boolean;
-  removeparamEnabled: boolean;
-  cspEnabled: boolean;
-  responseHeaderEnabled: boolean;
-  disabledSites: string[];
-}
 
 export const DEFAULT_SETTINGS: UserSettings = {
   enabled: true,

@@ -1,42 +1,20 @@
-type ScriptletFn = (args: string[]) => void;
+type ScriptletFn = (args: unknown[]) => void;
 
 type AnyRecord = Record<string, unknown>;
 
 const MAX_SELECTOR_MATCHES = 200;
 
-function parseValue(raw?: string): unknown {
-  if (raw === undefined) {
-    return undefined;
-  }
-  const trimmed = raw.trim();
-  if (trimmed === 'null') {
-    return null;
-  }
-  if (trimmed === 'true') {
-    return true;
-  }
-  if (trimmed === 'false') {
-    return false;
-  }
-  if (trimmed === 'undefined') {
-    return undefined;
-  }
-  if (trimmed === '') {
-    return '';
-  }
-  const numeric = Number(trimmed);
-  if (!Number.isNaN(numeric) && String(numeric) === trimmed) {
-    return numeric;
-  }
-  return raw;
+function readStringArg(args: unknown[], index: number): string {
+  const value = args[index];
+  return typeof value === 'string' ? value : '';
 }
 
-function setConstant(args: string[]): void {
-  const path = args[0];
+function setConstant(args: unknown[]): void {
+  const path = readStringArg(args, 0);
   if (!path) {
     return;
   }
-  const value = parseValue(args[1]);
+  const value = args.length > 1 ? args[1] : undefined;
   const parts = path.split('.').filter((part) => part.length > 0);
   if (parts.length === 0) {
     return;
@@ -94,18 +72,18 @@ function forEachNode(selector: string, fn: (node: Element) => void): void {
   }
 }
 
-function removeAttr(args: string[]): void {
-  const selector = args[0];
-  const attr = args[1];
+function removeAttr(args: unknown[]): void {
+  const selector = readStringArg(args, 0);
+  const attr = readStringArg(args, 1);
   if (!selector || !attr) {
     return;
   }
   forEachNode(selector, (node) => node.removeAttribute(attr));
 }
 
-function removeClass(args: string[]): void {
-  const selector = args[0];
-  const className = args[1];
+function removeClass(args: unknown[]): void {
+  const selector = readStringArg(args, 0);
+  const className = readStringArg(args, 1);
   if (!selector || !className) {
     return;
   }
@@ -116,9 +94,9 @@ function removeClass(args: string[]): void {
   });
 }
 
-function addClass(args: string[]): void {
-  const selector = args[0];
-  const className = args[1];
+function addClass(args: unknown[]): void {
+  const selector = readStringArg(args, 0);
+  const className = readStringArg(args, 1);
   if (!selector || !className) {
     return;
   }
@@ -129,8 +107,8 @@ function addClass(args: string[]): void {
   });
 }
 
-function hideBySelector(args: string[]): void {
-  const selector = args[0];
+function hideBySelector(args: unknown[]): void {
+  const selector = readStringArg(args, 0);
   if (!selector) {
     return;
   }
@@ -141,8 +119,8 @@ function hideBySelector(args: string[]): void {
   });
 }
 
-function removeBySelector(args: string[]): void {
-  const selector = args[0];
+function removeBySelector(args: unknown[]): void {
+  const selector = readStringArg(args, 0);
   if (!selector) {
     return;
   }

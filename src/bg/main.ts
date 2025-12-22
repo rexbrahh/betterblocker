@@ -2,7 +2,7 @@
 
 import {
   MatchDecision,
-  DynamicAction,
+  type CosmeticPayload,
   type DynamicRule,
   type UserSettings,
   DEFAULT_SETTINGS,
@@ -13,16 +13,6 @@ import {
   saveStoredSnapshot,
   type SnapshotStats,
 } from './snapshot-store.js';
-import {
-  traceConfigure,
-  traceExportJsonl,
-  traceMaybeRecord,
-  traceStats,
-  perfConfigure,
-  perfMaybeRecord,
-  perfStats,
-  perfExportJson,
-} from './trace.js';
 
 declare const browser: typeof chrome | undefined;
 
@@ -71,49 +61,14 @@ const blockedByTab = new Map<number, number>();
 const mainFrameRequestIdByTab = new Map<number, string>();
 let dynamicRules: DynamicRule[] = [];
 let settings: UserSettings = { ...DEFAULT_SETTINGS };
-const removeparamRedirects = new Map<string, { url: string; ts: number }>();
-const REMOVEPARAM_TTL_MS = 10_000;
 const BADGE_COLOR = '#d94848';
-
-function clearRemoveparamHistory(tabId: number): void {
-  for (const key of removeparamRedirects.keys()) {
-    if (key.startsWith(`${tabId}:`)) {
-      removeparamRedirects.delete(key);
-    }
-  }
-}
-
-function pruneRemoveparamHistory(now: number): void {
-  for (const [key, entry] of removeparamRedirects) {
-    if (now - entry.ts >= REMOVEPARAM_TTL_MS) {
-      removeparamRedirects.delete(key);
-    }
-  }
-}
-
-function getRemoveparamKey(details: RequestDetails): string {
-  return `${details.tabId}:${details.frameId}:${details.url}`;
-}
-
-function shouldSkipRemoveparam(details: RequestDetails, redirectUrl: string): boolean {
-  const now = Date.now();
-  pruneRemoveparamHistory(now);
-
-  const key = getRemoveparamKey(details);
-  const existing = removeparamRedirects.get(key);
-  if (existing && now - existing.ts < REMOVEPARAM_TTL_MS) {
-    return true;
-  }
-
-  removeparamRedirects.set(key, { url: redirectUrl, ts: now });
-  return false;
-}
 
 async function loadDynamicRules(): Promise<void> {
   return new Promise((resolve) => {
     api.storage.local.get([DYNAMIC_RULES_KEY], (result) => {
       const rules = result[DYNAMIC_RULES_KEY] as DynamicRule[] | undefined;
       dynamicRules = Array.isArray(rules) ? rules : [];
+      syncDynamicRules();
       resolve();
     });
   });
@@ -121,8 +76,36 @@ async function loadDynamicRules(): Promise<void> {
 
 async function saveDynamicRules(rules: DynamicRule[]): Promise<void> {
   return new Promise((resolve) => {
-    api.storage.local.set({ [DYNAMIC_RULES_KEY]: rules }, () => resolve());
+    api.storage.local.set({ [DYNAMIC_RULES_KEY]: rules }, () => {
+      syncDynamicRules();
+      resolve();
+    });
   });
+}
+
+function syncDynamicRules(): void {
+  if (!wasm?.set_dynamic_rules) {
+    return;
+  }
+  try {
+    wasm.set_dynamic_rules(dynamicRules);
+  } catch (e) {
+    console.warn('[BetterBlocker] Failed to sync dynamic rules:', e);
+  }
+}
+
+function syncRuntimeSettings(): void {
+  if (!wasm?.set_runtime_settings) {
+    return;
+  }
+  try {
+    wasm.set_runtime_settings({
+      dynamicFilteringEnabled: settings.dynamicFilteringEnabled,
+      disabledSites: settings.disabledSites,
+    });
+  } catch (e) {
+    console.warn('[BetterBlocker] Failed to sync runtime settings:', e);
+  }
 }
 
 function normalizeSettings(value?: Partial<UserSettings>): UserSettings {
@@ -152,6 +135,7 @@ async function loadSettings(): Promise<void> {
     api.storage.sync.get([SETTINGS_KEY], (result) => {
       const stored = result[SETTINGS_KEY] as Partial<UserSettings> | undefined;
       settings = normalizeSettings(stored);
+      syncRuntimeSettings();
       resolve();
     });
   });
@@ -165,10 +149,17 @@ async function saveSettings(next: UserSettings): Promise<void> {
 
 function applySettings(update: Partial<UserSettings>): UserSettings {
   settings = normalizeSettings({ ...settings, ...update });
+  syncRuntimeSettings();
   return settings;
 }
 
 function getSitePattern(url: string): string | null {
+  if (!url) {
+    return null;
+  }
+  if (wasm?.get_site_pattern_js) {
+    return wasm.get_site_pattern_js(url) ?? null;
+  }
   const host = extractHost(url);
   if (!host) {
     return null;
@@ -181,11 +172,10 @@ function isSiteDisabled(url?: string): boolean {
   if (!url) {
     return false;
   }
-  const host = extractHost(url);
-  if (!host) {
-    return false;
+  if (wasm?.is_site_disabled_js) {
+    return wasm.is_site_disabled_js(url);
   }
-  return settings.disabledSites.some((pattern) => hostMatches(pattern, host));
+  return false;
 }
 
 function updateBadge(tabId: number): void {
@@ -257,121 +247,13 @@ function getEtld1(host: string): string {
   return host;
 }
 
-function hostMatches(pattern: string, host: string): boolean {
-  if (!pattern || pattern === '*') {
-    return true;
-  }
-  if (!host) {
-    return false;
-  }
-  if (host === pattern) {
-    return true;
-  }
-  return host.endsWith(`.${pattern}`);
-}
+type DynamicMatch = { action: number; isOverlyBroad: boolean };
 
-function targetMatches(pattern: string, reqHost: string, reqEtld1: string, isThirdParty: boolean): boolean {
-  if (!pattern || pattern === '*') {
-    return true;
+function matchDynamic(details: RequestDetails, initiator?: string): DynamicMatch {
+  if (!wasm?.match_dynamic) {
+    return { action: 0, isOverlyBroad: false };
   }
-  if (pattern === '3p' || pattern === 'third-party') {
-    return isThirdParty;
-  }
-  if (pattern === '1p' || pattern === 'first-party') {
-    return !isThirdParty;
-  }
-  if (reqEtld1 && reqEtld1 === pattern) {
-    return true;
-  }
-  return hostMatches(pattern, reqHost);
-}
-
-function typeMatches(ruleType: string, requestType: string): boolean {
-  if (!ruleType || ruleType === '*') {
-    return true;
-  }
-  const normalized = ruleType.toLowerCase();
-  if (normalized === 'document') {
-    return requestType === 'main_frame' || requestType === 'sub_frame';
-  }
-  if (normalized === 'subdocument' || normalized === 'sub_frame') {
-    return requestType === 'sub_frame';
-  }
-  if (normalized === 'main_frame') {
-    return requestType === 'main_frame';
-  }
-  if (normalized === 'xhr') {
-    return requestType === 'xmlhttprequest';
-  }
-  return normalized === requestType;
-}
-
-type DynamicMatch = { action: DynamicAction; rule: DynamicRule | undefined };
-
-function isOverlyBroadDynamicRule(rule?: DynamicRule): boolean {
-  if (!rule) {
-    return false;
-  }
-  const sitePattern = rule.site?.toLowerCase() ?? '*';
-  const targetPattern = rule.target?.toLowerCase() ?? '*';
-  const typePattern = rule.type?.toLowerCase() ?? '*';
-  const isGlobalSite = sitePattern === '*';
-  const isGlobalTarget = targetPattern === '*';
-  const isMainFrameType =
-    typePattern === '*' || typePattern === 'main_frame' || typePattern === 'document';
-  return isGlobalSite && isGlobalTarget && isMainFrameType;
-}
-
-function matchDynamicRules(details: RequestDetails, initiator?: string): DynamicMatch {
-  if (!settings.dynamicFilteringEnabled || dynamicRules.length === 0) {
-    return { action: DynamicAction.NOOP, rule: undefined };
-  }
-
-  const reqHost = extractHost(details.url);
-  const siteUrl = initiator ?? details.url;
-  const siteHost = extractHost(siteUrl);
-  const siteEtld1 = getEtld1(siteHost);
-  const reqEtld1 = getEtld1(reqHost);
-  const isThirdParty = siteEtld1.length > 0 && reqEtld1.length > 0 && siteEtld1 !== reqEtld1;
-
-  let bestAction = DynamicAction.NOOP;
-  let bestRule: DynamicRule | undefined;
-  let bestScore = -1;
-  let bestIndex = -1;
-
-  for (let i = 0; i < dynamicRules.length; i++) {
-    const rule = dynamicRules[i];
-    if (!rule) {
-      continue;
-    }
-    const sitePattern = rule.site?.toLowerCase() ?? '*';
-    const targetPattern = rule.target?.toLowerCase() ?? '*';
-    const typePattern = rule.type?.toLowerCase() ?? '*';
-
-    if (!hostMatches(sitePattern, siteHost)) {
-      continue;
-    }
-    if (!targetMatches(targetPattern, reqHost, reqEtld1, isThirdParty)) {
-      continue;
-    }
-    if (!typeMatches(typePattern, details.type)) {
-      continue;
-    }
-
-    let score = 0;
-    if (sitePattern !== '*') score += 1;
-    if (targetPattern !== '*') score += 1;
-    if (typePattern !== '*') score += 1;
-
-    if (score > bestScore || (score === bestScore && i > bestIndex)) {
-      bestScore = score;
-      bestIndex = i;
-      bestAction = rule.action;
-      bestRule = rule;
-    }
-  }
-
-  return { action: bestAction, rule: bestRule };
+  return wasm.match_dynamic(details.url, details.type, initiator);
 }
 
 function normalizeContextUrl(value?: string): string | undefined {
@@ -449,7 +331,37 @@ interface WasmExports {
     tabId: number,
     frameId: number,
     requestId: string
-  ): { css: string; enableGeneric: boolean; procedural: string[]; scriptlets: { name: string; args: string[] }[] };
+  ): CosmeticPayload;
+  match_dynamic(
+    url: string,
+    requestType: string,
+    initiator: string | undefined
+  ): { action: number; isOverlyBroad: boolean };
+  set_dynamic_rules?(rules: DynamicRule[]): void;
+  set_runtime_settings?(settings: { dynamicFilteringEnabled?: boolean; disabledSites?: string[] }): void;
+  is_site_disabled_js?(url: string): boolean;
+  get_site_pattern_js?(url: string): string | undefined;
+  removeparam_should_skip?(tabId: number, frameId: number, url: string, redirectUrl: string): boolean;
+  removeparam_clear_tab?(tabId: number): void;
+  trace_configure?(enabled: boolean, maxEntries: number): void;
+  trace_record?(
+    url: string,
+    requestType: string,
+    initiator: string | undefined,
+    tabId: number,
+    frameId: number,
+    requestId: string
+  ): void;
+  trace_stats?(): { enabled: boolean; count: number; max: number };
+  trace_export_jsonl?(): string;
+  perf_configure?(enabled: boolean, maxEntries: number): void;
+  perf_record?(phase: number, durationMs: number): void;
+  perf_stats?(): {
+    enabled: boolean;
+    beforeRequest: { count: number; min: number; max: number; p50: number; p95: number; p99: number };
+    headersReceived: { count: number; min: number; max: number; p50: number; p95: number; p99: number };
+  };
+  perf_export_json?(): string;
   should_block(url: string, requestType: string, initiator: string | undefined): boolean;
   get_snapshot_info(): { size: number; initialized: boolean };
   get_etld1_js?(host: string): string;
@@ -530,6 +442,8 @@ async function swapMatcher(snapshot: Uint8Array | null): Promise<boolean> {
   }
 
   wasm = nextWasm;
+  syncRuntimeSettings();
+  syncDynamicRules();
   return true;
 }
 
@@ -877,10 +791,11 @@ interface ResponseDetails extends RequestDetails {
 function onBeforeRequest(
   details: RequestDetails
 ): chrome.webRequest.BlockingResponse | undefined {
-  traceMaybeRecord(details);
   const perfStart = performance.now();
   const finalize = (response?: chrome.webRequest.BlockingResponse) => {
-    perfMaybeRecord('beforeRequest', performance.now() - perfStart);
+    if (wasm?.perf_record) {
+      wasm.perf_record(0, performance.now() - perfStart);
+    }
     return response;
   };
 
@@ -895,22 +810,21 @@ function onBeforeRequest(
   }
 
   const initiator = getContextUrl(details);
+  if (wasm?.trace_record) {
+    wasm.trace_record(details.url, details.type, initiator, details.tabId, details.frameId, details.requestId);
+  }
   if (isSiteDisabled(initiator ?? details.url)) {
     return finalize(undefined);
   }
 
-  const dynamicMatch = matchDynamicRules(details, initiator);
+  const dynamicMatch = matchDynamic(details, initiator);
 
-  if (dynamicMatch.action === DynamicAction.BLOCK) {
-    if (details.type === 'main_frame' && isOverlyBroadDynamicRule(dynamicMatch.rule)) {
-      console.warn('[BetterBlocker] Skipping overly broad dynamic rule for main_frame', dynamicMatch.rule);
-      return finalize(undefined);
-    }
+  if (dynamicMatch.action === 1) {
     incrementTabBlockCount(details.tabId);
     return finalize({ cancel: true });
   }
 
-  if (dynamicMatch.action === DynamicAction.ALLOW) {
+  if (dynamicMatch.action === 2) {
     return finalize(undefined);
   }
 
@@ -945,8 +859,16 @@ function onBeforeRequest(
           return finalize(undefined);
         }
         if (result.redirectUrl) {
-          if (shouldSkipRemoveparam(details, result.redirectUrl)) {
-            return finalize(undefined);
+          if (wasm?.removeparam_should_skip) {
+            const skip = wasm.removeparam_should_skip(
+              details.tabId,
+              details.frameId,
+              details.url,
+              result.redirectUrl
+            );
+            if (skip) {
+              return finalize(undefined);
+            }
           }
           return finalize({ redirectUrl: result.redirectUrl });
         }
@@ -966,7 +888,9 @@ function onHeadersReceived(
 ): chrome.webRequest.BlockingResponse | undefined {
   const perfStart = performance.now();
   const finalize = (response?: chrome.webRequest.BlockingResponse) => {
-    perfMaybeRecord('headersReceived', performance.now() - perfStart);
+    if (wasm?.perf_record) {
+      wasm.perf_record(1, performance.now() - perfStart);
+    }
     return response;
   };
 
@@ -1056,7 +980,9 @@ function setupTabTracking(): void {
     topFrameByTab.delete(tabId);
     blockedByTab.delete(tabId);
     mainFrameRequestIdByTab.delete(tabId);
-    clearRemoveparamHistory(tabId);
+    if (wasm?.removeparam_clear_tab) {
+      wasm.removeparam_clear_tab(tabId);
+    }
   });
 }
 
@@ -1141,7 +1067,7 @@ function setupMessageHandlers(): void {
           const tabId = sender.tab?.id ?? -1;
           const frameId = sender.frameId ?? 0;
           const requestId = message.requestId ?? 'cosmetic';
-          let result: { css: string; enableGeneric: boolean; procedural: string[]; scriptlets: { name: string; args: string[] }[] };
+          let result: CosmeticPayload;
           try {
             result = wasm.match_cosmetics(url, 'main_frame', undefined, tabId, frameId, requestId);
           } catch (e) {
@@ -1249,41 +1175,75 @@ function setupMessageHandlers(): void {
             });
           return true;
 
-        case 'trace.start':
-          traceConfigure(true, message.maxEntries ?? 50_000);
-          sendResponse({ ok: true, stats: traceStats() });
+        case 'trace.start': {
+          if (wasm?.trace_configure) {
+            wasm.trace_configure(true, message.maxEntries ?? 50_000);
+          }
+          const stats = wasm?.trace_stats ? wasm.trace_stats() : { enabled: false, count: 0, max: 0 };
+          sendResponse({ ok: true, stats });
           return true;
+        }
 
-        case 'trace.stop':
-          traceConfigure(false);
-          sendResponse({ ok: true, stats: traceStats() });
+        case 'trace.stop': {
+          if (wasm?.trace_configure) {
+            wasm.trace_configure(false, 0);
+          }
+          const stats = wasm?.trace_stats ? wasm.trace_stats() : { enabled: false, count: 0, max: 0 };
+          sendResponse({ ok: true, stats });
           return true;
+        }
 
-        case 'trace.stats':
-          sendResponse({ ok: true, stats: traceStats() });
+        case 'trace.stats': {
+          const stats = wasm?.trace_stats ? wasm.trace_stats() : { enabled: false, count: 0, max: 0 };
+          sendResponse({ ok: true, stats });
           return true;
+        }
 
-        case 'trace.export':
-          sendResponse({ ok: true, jsonl: traceExportJsonl(), stats: traceStats() });
+        case 'trace.export': {
+          const jsonl = wasm?.trace_export_jsonl ? wasm.trace_export_jsonl() : '';
+          const stats = wasm?.trace_stats ? wasm.trace_stats() : { enabled: false, count: 0, max: 0 };
+          sendResponse({ ok: true, jsonl, stats });
           return true;
+        }
 
-        case 'perf.start':
-          perfConfigure(true, message.maxEntries ?? 100_000);
-          sendResponse({ ok: true, stats: perfStats() });
+        case 'perf.start': {
+          if (wasm?.perf_configure) {
+            wasm.perf_configure(true, message.maxEntries ?? 100_000);
+          }
+          const stats = wasm?.perf_stats
+            ? wasm.perf_stats()
+            : { enabled: false, beforeRequest: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 }, headersReceived: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 } };
+          sendResponse({ ok: true, stats });
           return true;
+        }
 
-        case 'perf.stop':
-          perfConfigure(false);
-          sendResponse({ ok: true, stats: perfStats() });
+        case 'perf.stop': {
+          if (wasm?.perf_configure) {
+            wasm.perf_configure(false, 0);
+          }
+          const stats = wasm?.perf_stats
+            ? wasm.perf_stats()
+            : { enabled: false, beforeRequest: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 }, headersReceived: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 } };
+          sendResponse({ ok: true, stats });
           return true;
+        }
 
-        case 'perf.stats':
-          sendResponse({ ok: true, stats: perfStats() });
+        case 'perf.stats': {
+          const stats = wasm?.perf_stats
+            ? wasm.perf_stats()
+            : { enabled: false, beforeRequest: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 }, headersReceived: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 } };
+          sendResponse({ ok: true, stats });
           return true;
+        }
 
-        case 'perf.export':
-          sendResponse({ ok: true, json: perfExportJson(), stats: perfStats() });
+        case 'perf.export': {
+          const json = wasm?.perf_export_json ? wasm.perf_export_json() : '';
+          const stats = wasm?.perf_stats
+            ? wasm.perf_stats()
+            : { enabled: false, beforeRequest: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 }, headersReceived: { count: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0 } };
+          sendResponse({ ok: true, json, stats });
           return true;
+        }
 
         default:
           return false;

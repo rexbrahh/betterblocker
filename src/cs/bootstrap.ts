@@ -2,9 +2,6 @@ import { sendMessage } from '../shared/messaging.js';
 import type { CosmeticPayload } from '../shared/types.js';
 import { pageContextScriptlets, scriptlets } from './scriptlets.js';
 
-const MAX_SCRIPTLETS = 32;
-const MAX_SCRIPTLET_ARGS = 8;
-const MAX_PROCEDURAL_RULES = 64;
 const MAX_PROCEDURAL_NODES = 200;
 
 function isTopFrame(): boolean {
@@ -20,9 +17,9 @@ function injectPageScriptlets(calls: CosmeticPayload['scriptlets']): void {
   if (!calls || calls.length === 0) {
     return;
   }
-  const limited = calls.slice(0, MAX_SCRIPTLETS).map((call) => ({
+  const limited = calls.map((call) => ({
     name: call.name,
-    args: Array.isArray(call.args) ? call.args.slice(0, MAX_SCRIPTLET_ARGS) : [],
+    args: Array.isArray(call.args) ? call.args : [],
   }));
   const root = document.documentElement;
   if (!root) {
@@ -48,107 +45,17 @@ function injectPageScriptlets(calls: CosmeticPayload['scriptlets']): void {
   }
 }
 
-type ProceduralOp = {
-  type: string;
-  args: string;
-};
+type ProceduralRule = CosmeticPayload['procedural'][number];
 
-const PROCEDURAL_TOKENS: Array<{ type: string; token: string }> = [
-  { type: 'has-text', token: ':has-text(' },
-  { type: 'matches-css', token: ':matches-css(' },
-  { type: 'xpath', token: ':xpath(' },
-  { type: 'upward', token: ':upward(' },
-  { type: 'remove', token: ':remove(' },
-  { type: 'style', token: ':style(' },
-];
-
-function findNextProceduralOp(raw: string, start: number) {
-  let best: { type: string; token: string; index: number } | null = null;
-  for (const entry of PROCEDURAL_TOKENS) {
-    const idx = raw.indexOf(entry.token, start);
-    if (idx === -1) {
+function applyProceduralRules(rules: ProceduralRule[]): void {
+  for (const rule of rules) {
+    if (!rule) {
       continue;
     }
-    if (!best || idx < best.index) {
-      best = { type: entry.type, token: entry.token, index: idx };
-    }
-  }
-  return best;
-}
-
-function readParenContent(raw: string, start: number) {
-  if (raw[start] !== '(') {
-    return null;
-  }
-  let depth = 0;
-  for (let i = start; i < raw.length; i++) {
-    const ch = raw[i];
-    if (ch === '(') {
-      depth += 1;
-      continue;
-    }
-    if (ch === ')') {
-      depth -= 1;
-      if (depth === 0) {
-        return { args: raw.slice(start + 1, i), end: i };
-      }
-    }
-  }
-  return null;
-}
-
-function parseProcedural(raw: string) {
-  const first = findNextProceduralOp(raw, 0);
-  if (!first) {
-    return null;
-  }
-  const base = raw.slice(0, first.index).trim();
-  const ops: ProceduralOp[] = [];
-  let cursor = first.index;
-  while (cursor < raw.length) {
-    const next = findNextProceduralOp(raw, cursor);
-    if (!next) {
-      break;
-    }
-    const parenStart = next.index + next.token.length - 1;
-    const parsed = readParenContent(raw, parenStart);
-    if (!parsed) {
-      break;
-    }
-    ops.push({ type: next.type, args: parsed.args.trim() });
-    cursor = parsed.end + 1;
-  }
-  if (ops.length === 0) {
-    return null;
-  }
-  return { base: base || '*', ops };
-}
-
-function stripQuotes(value: string): string {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
-}
-
-function applyProceduralRules(rules: string[]): void {
-  const limit = Math.min(rules.length, MAX_PROCEDURAL_RULES);
-  for (let i = 0; i < limit; i++) {
-    const raw = rules[i];
-    if (!raw) {
-      continue;
-    }
-    const parsed = parseProcedural(raw);
-    if (!parsed) {
-      continue;
-    }
+    const base = rule.base?.trim() || '*';
     let nodes: Element[] = [];
     try {
-      nodes = Array.from(document.querySelectorAll(parsed.base));
+      nodes = Array.from(document.querySelectorAll(base));
     } catch (e) {
       void e;
       continue;
@@ -157,7 +64,7 @@ function applyProceduralRules(rules: string[]): void {
       nodes = nodes.slice(0, MAX_PROCEDURAL_NODES);
     }
 
-    for (const op of parsed.ops) {
+    for (const op of rule.ops || []) {
       if (nodes.length === 0) {
         break;
       }
@@ -217,9 +124,6 @@ function applyProceduralRules(rules: string[]): void {
                 nextNodes.push(element);
               }
             }
-          }
-          if (nextNodes.length >= MAX_PROCEDURAL_NODES) {
-            break;
           }
         }
         nodes = nextNodes;
@@ -281,6 +185,17 @@ function applyProceduralRules(rules: string[]): void {
   }
 }
 
+function stripQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
 (async () => {
   if (document.documentElement.dataset.bbInjected) {
     return;
@@ -319,9 +234,7 @@ function applyProceduralRules(rules: string[]): void {
     if (response.scriptlets && response.scriptlets.length > 0) {
       const pageCalls: CosmeticPayload['scriptlets'] = [];
       const localCalls: CosmeticPayload['scriptlets'] = [];
-      const limit = Math.min(response.scriptlets.length, MAX_SCRIPTLETS);
-      for (let i = 0; i < limit; i++) {
-        const call = response.scriptlets[i];
+      for (const call of response.scriptlets) {
         if (!call) {
           continue;
         }
@@ -338,7 +251,7 @@ function applyProceduralRules(rules: string[]): void {
           if (!fn) {
             continue;
           }
-          const args = Array.isArray(call.args) ? call.args.slice(0, MAX_SCRIPTLET_ARGS) : [];
+          const args = Array.isArray(call.args) ? call.args : [];
           try {
             fn(args);
           } catch (e) {
