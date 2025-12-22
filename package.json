@@ -20,13 +20,15 @@
     "gen:types": "cargo run --package bb-cli -- gen-types",
     "test": "bun test",
     "test:watch": "bun test --watch",
-    "test:e2e": "SDKROOT=$(xcrun --sdk macosx --show-sdk-path) LIBRARY_PATH=$(xcrun --sdk macosx --show-sdk-path)/usr/lib cargo run --package bb-cli --features e2e -- e2e",
-    "test:e2e:headed": "SDKROOT=$(xcrun --sdk macosx --show-sdk-path) LIBRARY_PATH=$(xcrun --sdk macosx --show-sdk-path)/usr/lib cargo run --package bb-cli --features e2e -- e2e",
+    "test:e2e": "npx playwright test",
+    "test:e2e:headed": "npx playwright test --headed",
     "compile": "cargo run --package bb-cli -- compile",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@playwright/test": "^1.57.0",
     "@types/bun": "^1.1.0",
-    "@types/chrome": "^0.1.32"
+    "@types/chrome": "^0.1.32",
+    "playwright": "^1.57.0"
   }
 }
