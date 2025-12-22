@@ -278,7 +278,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   scriptletsEnabled: true,
   dynamicFilteringEnabled: true,
   removeparamEnabled: true,
-  cspEnabled: true,
+  cspEnabled: false,
   responseHeaderEnabled: true,
   disabledSites: [],
 };
