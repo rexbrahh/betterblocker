@@ -55,6 +55,12 @@ jobs:
       - name: Build extension
         run: bun run dist
 
+      - name: Verify signing secrets
+        if: ${{ secrets.CRX_PRIVATE_KEY_B64 == '' || secrets.EXTENSION_ID == '' }}
+        run: |
+          echo "Missing required secrets: CRX_PRIVATE_KEY_B64 and/or EXTENSION_ID"
+          exit 1
+
       - name: Write private key
         run: |
           echo "${{ secrets.CRX_PRIVATE_KEY_B64 }}" | base64 -d > crx.pem
